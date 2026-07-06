@@ -114,7 +114,7 @@ class transversal_gate_finder:
     # finds physical representative for transversal logical gate
     # logic_gate: z248_elem object, linear combination of generator transversal logicals
     def find_phys_rep(self, logic_gate):
-        logic_elem = lin.elem(np.array(logic_gate), self.translog_alllog.dim1)
+        logic_elem = lin.Elem(np.array(logic_gate), self.translog_alllog.dim1)
         transphys_rep = self.transphys_translog.solve_with_helper(logic_elem, self.rep_find_helper)
         phys_rep = self.transphys_allphys @ transphys_rep
         return phys_rep
@@ -228,7 +228,7 @@ def pullback_homomorphism(nr_qubits, checks, gates):
     gate_dims = [len(lgates) for lgates in gates]
 
     # assemble into dense matrix
-    pullback = lin.hom.zeros(check_dims, gate_dims)
+    pullback = lin.Hom.zeros(check_dims, gate_dims)
     for l, lcols in enumerate(pullback_columns):
         for i, lcol in enumerate(lcols):
             for gate_loc, val in lcol.items():
@@ -516,7 +516,7 @@ def ti_pullback_homomorphism(nr_qubits, checks, gates):
     gate_dims = [len(lgates) for lgates in gates]
 
     # assemble into dense matrix
-    pullback = lin.hom.zeros(check_dims, gate_dims)
+    pullback = lin.Hom.zeros(check_dims, gate_dims)
     for l, lcols in enumerate(pullback_columns):
         for i, lcol in enumerate(lcols):
             for gate_loc, val in lcol.items():
