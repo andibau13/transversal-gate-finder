@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+src/third_order_gates/__init__.py
+src/third_order_gates/flint_wrappers.py
+src/third_order_gates/third_order_gates.py
+src/third_order_gates/z248_linalg.py
+src/transversal_gate_finder.egg-info/PKG-INFO
+src/transversal_gate_finder.egg-info/SOURCES.txt
+src/transversal_gate_finder.egg-info/dependency_links.txt
+src/transversal_gate_finder.egg-info/requires.txt
+src/transversal_gate_finder.egg-info/top_level.txt

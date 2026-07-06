@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transversal-gate-finder"
+version = "0.1.0"
+description = "Finding diagonal transversal gates in CSS codes"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Andreas Bauer", email = "andibau13@gmail.com" }
+]
+dependencies = [
+    "numpy"
+]
+
+[project.optional-dependencies]
+full = [
+    "galois"
+]
+
+[project.urls]
+Homepage = "https://github.com/username/my-project"
+Repository = "https://github.com/username/my-project"
+
+[tool.setuptools.packages.find]
+where = ["src"]
