@@ -1,12 +1,11 @@
-from . import twogroup_linalg as lin
+import twogroup_linalg as lin
 from . import flint_wrappers as fl
 #import scipy.linalg
 import numpy as np
-#import itertools
 from itertools import combinations, product
 
 
-class transversal_gate_finder:
+class GateFinder:
     # 
     def __init__(self, nr_qubits, checks = None, gates = None, logicals = None, other_checks = None):
         self.nr_qubits = nr_qubits
@@ -132,7 +131,7 @@ class transversal_gate_finder:
 
     
     def __add__(self, other):
-        res = transversal_gate_finder(self.nr_qubits + other.nr_qubits)
+        res = GateFinder(self.nr_qubits + other.nr_qubits)
         res.checks= self.checks + shift_loc_list(other.checks, self.nr_qubits)
         res.logicals = self.logicals + shift_loc_list(other.logicals, self.nr_qubits)
         res.other_checks = self.other_checks + shift_loc_list(other.other_checks, self.nr_qubits)
@@ -279,7 +278,7 @@ def list_from_matrix(matrix):
 
 # helper class for analyzing translation-invariant codes in n dimensions
 # checks, gates, other_checks are the same as for transversal_gate_finder, just that a qubit number is replaced by a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
-class ti_transversal_gate_finder:
+class TIGateFinder:
     def __init__(self, nr_qubits, dimension, checks = None, gates = None, other_checks = None):
         self.nr_qubits = nr_qubits # number of qubits per unit cell
         self.dimension = dimension
@@ -345,11 +344,11 @@ class ti_transversal_gate_finder:
         cum_dims = np.cumprod(periods)
         cum_dims = np.insert(cum_dims, 0, 1)[:-1]
 
-        tgf = transversal_gate_finder(total_dim * self.nr_qubits)
-        tgf.add_checks(ti_transversal_gate_finder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.checks))
+        tgf = GateFinder(total_dim * self.nr_qubits)
+        tgf.add_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.checks))
         for l in range(len(self.gates)):
-            tgf.add_gates(ti_transversal_gate_finder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.gates[l]), l)
-        tgf.add_other_checks(ti_transversal_gate_finder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks))
+            tgf.add_gates(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.gates[l]), l)
+        tgf.add_other_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks))
 
         return tgf
 
@@ -385,9 +384,9 @@ class ti_transversal_gate_finder:
     def generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, qubit_listlist):
         output_listlist = []
         for i in range(total_dim):
-            shift_coord = ti_transversal_gate_finder.nr_to_coord(i, cum_dims, periods)
+            shift_coord = TIGateFinder.nr_to_coord(i, cum_dims, periods)
             for qubit_list in qubit_listlist:
-                output_listlist.append([ti_transversal_gate_finder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, coord+shift_coord, intern) for coord, intern in qubit_list])
+                output_listlist.append([TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, coord+shift_coord, intern) for coord, intern in qubit_list])
                 
         return output_listlist
     
@@ -395,7 +394,7 @@ class ti_transversal_gate_finder:
     def __add__(self, other):
         if self.dimension != other.dimension:
             raise ValueError("Space(time) dimensions of added codes must agree.")
-        res = ti_transversal_gate_finder(self.nr_qubits + other.nr_qubits, self.dimension)
+        res = TIGateFinder(self.nr_qubits + other.nr_qubits, self.dimension)
         res.checks= self.checks + shift_ti_loc_list(other.checks, self.nr_qubits)
         res.other_checks = self.other_checks + shift_ti_loc_list(other.other_checks, self.nr_qubits)
 
@@ -409,7 +408,7 @@ class ti_transversal_gate_finder:
     def inverted_coordinates(self):
         def invert_coords(mlist):
             return [[((-np.array(coord)).tolist(),i) for coord, i in entry] for entry in mlist]
-        return ti_transversal_gate_finder(self.nr_qubits,
+        return TIGateFinder(self.nr_qubits,
                                               self.dimension,
                                               checks = invert_coords(self.checks),
                                               other_checks = invert_coords(self.other_checks),

@@ -1,1 +1,1 @@
-from transversal_gate_finder import *
+from .transversal_gate_finder import *
