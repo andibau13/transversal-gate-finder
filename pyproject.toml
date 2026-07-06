@@ -13,12 +13,8 @@ authors = [
     { name = "Andreas Bauer", email = "andibau13@gmail.com" }
 ]
 dependencies = [
-    "numpy"
-]
-
-[project.optional-dependencies]
-full = [
-    "galois"
+    "numpy",
+    "twogroup-linalg @ git+https://github.com/andibau13/twogroup-linalg.git"
 ]
 
 [project.urls]
