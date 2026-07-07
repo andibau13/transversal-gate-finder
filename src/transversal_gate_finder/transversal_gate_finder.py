@@ -6,22 +6,22 @@ from itertools import combinations, product
 
 
 class GateFinder:
-    # 
+    """
+    Helper class for finding diagonal transversal gates on a given CSS code.
+
+    Attributes:
+        nr_qubits: number of qubits in the CSS code
+        checks: List of X checks, each specified by a qubit list
+        logicals: List of X logicals, each specified by a qubit list
+        other_checks: List of Z checks (optional).
+        gates: Ansatz gates from which the physical transversal gates will consist. List; gates[l] is a list of all ansatz gates or order 2^(l+1), that is, with prefactor 1/2^(l+1) (for example T is l=2, CS or S are l=1). gates[l][i] is the set of qubits participating in the gate, a frozenset of int.
+    """
     def __init__(self, nr_qubits, checks = None, gates = None, logicals = None, other_checks = None):
         self.nr_qubits = nr_qubits
-        # List of X checks. Each X check is a list of qubit numbers involved.
         self.checks = checks if checks is not None else []
-        # List of X logicals
         self.logicals = logicals if logicals is not None else []
-        # List of Z logicals (optional)
         self.other_checks = other_checks if other_checks is not None else []
-
-        # possible gate locations for diagonal clifford-hierarchy gates, list of lists of frozensets of int
-        # the l-th entry of self.gates is a list of all order-l gate generators A with a prefactor 1/2^(l+1)
-        # A is a list of qubits participating in the gate
         self.gates = gates if gates is not None else []
-
-    
 
     def add_checks(self, checks):
         self.checks += checks
@@ -31,13 +31,13 @@ class GateFinder:
         self.other_checks += other_checks
 
 
-    # add empty sets for gates of orders up to l
     def extend_gate_orders(self, l):
+        """Reserve space to include gates of orders up to l."""
         if len(self.gates) <= l:
             self.gates += [[] for _ in range(l - len(self.gates) + 1)]
-    
-    # remove duplicate gates, and remove gate locations of order l if they are already present at a higher order
+
     def consolidate_gates(self):
+        """Remove duplicate gates, and remove gate locations of order l if they are already present at a higher order."""
         current_gatesset = set()
         for l in reversed(range(len(self.gates))):
             lgates_set = set(map(frozenset, self.gates[l])) - current_gatesset
@@ -49,13 +49,13 @@ class GateFinder:
         self.extend_gate_orders(l)
         self.gates[l] += gates
 
-    # add single-qubit gate locations at all qubits
     def add_all_singlequbit_gates(self, l):
+        """Add single-qubit ansatz gates of order 2^(l+1) at all qubits."""
         self.extend_gate_orders(l)
         self.gates[l] += [{i} for i in range(self.nr_qubits)]
-    
-    # adds all gate locations of size k and phase-level l within each group in "groups".
+
     def add_gates_in_groups(self, groups, l, k):
+        """Add all ansatz gates involving k qubits of order 2^(l+1) within each group in "groups"."""
         self.extend_gate_orders(l)
         loc_set = set()
         for group in groups:
@@ -63,10 +63,16 @@ class GateFinder:
         self.gates[l] += list(map(set, loc_set))
 
     def add_gates_in_checks(self, l, k):
+        """
+        Add all ansatz gates involving k qubits of order 2^(l+1) within each X check
+        """
         self.add_gates_in_groups(self.checks, l, k)
 
- 
+
     def logicals_from_other_checks(self):
+        """
+        Initialize X logicals from X checks and Z logicals (self.other_checks, if given)
+        """
         #print("test x and z stabilizers commute:", ~np.any(self.checks.T @ zchecks % 2 == 1))
         #self.test_commutation()
         check_array = matrix_from_list(self.nr_qubits, self.checks)
@@ -84,18 +90,28 @@ class GateFinder:
 
     def pullback_checks(self):
         return pullback_homomorphism(self.nr_qubits, self.checks, self.gates)[0]
-    
+
     def pullback_logicals(self):
         return pullback_homomorphism(self.nr_qubits, self.logicals, self.gates)
-    
+
     def find_gates(self):
+        """
+        Compute the space of all transversal logical gates and the physical stabilizers.
+
+        Sets the following attibutes of self:
+            transphys_allphys: All transversal physical gates: 2-group homomorphism from the group of all code-space preserving physical gates to the group of all physical gates formed by the ansatz gates
+            translog_alllog: All transversal logical gates: 2-group homomorphism from the group of logicals with a transversal implementation to the group of all logicals
+            rep_find_helper: allows the method find_phys_rep to quickly find a physical representative for a given transversal logical
+            stabphys_allphys: All transversal stabilizers: 2-group homomorphism from the group of all physical gates preserving the code space to the group of all physical gates
+        """
+
         # allphys: group of all physical diagonal gates at the gate_locs
         # transphys: group of all physical diagonal gates that preserve the code space, including ones with trivial logical action
         # allcheck: group of all phase functions on the checks
         # alllog: group of all diagonal logical gates
         # translog: group of all logical gates with transversal physical implementation
         # stabphys: group of physical transversal gates with trivial logical action
-
+        
         allphys_allcheck = self.pullback_checks() # map all physical -> all check
         self.transphys_allphys = allphys_allcheck.kernel() # map transversal physical -> all physical
         allphys_alllog, self.alllog_locs = self.pullback_logicals() # map all physical -> all logical
@@ -105,32 +121,47 @@ class GateFinder:
         self.stabphys_allphys = self.transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
 
     def print_transversal_logicals(self):
+        """
+        Can be called after find_gates()
+        """
         print(gates_string(self.translog_alllog, self.alllog_locs))
 
     def print_physical_stabilizers(self):
+        """
+        Can be called after find_gates()
+        """
         print(gates_string(self.stabphys_allphys, self.gates))
 
-    # finds physical representative for transversal logical gate
-    # logic_gate: z248_elem object, linear combination of generator transversal logicals
     def find_phys_rep(self, logic_gate):
+        """
+        Can be called after find_gates().
+        Find physical representative for transversal logical gate.
+
+        Parameters:
+            logic_gate: Elem object, linear combination of generator transversal logicals
+        """
         logic_elem = lin.Elem(np.array(logic_gate), self.translog_alllog.dim1)
         transphys_rep = self.transphys_translog.solve_with_helper(logic_elem, self.rep_find_helper)
         phys_rep = self.transphys_allphys @ transphys_rep
         return phys_rep
-    
+
     def print_phys_rep(self, logic_gate):
         rep = self.find_phys_rep(logic_gate)
         print(gate_string(rep, self.gates))
 
-    # tests if z checks commute with x checks and x logicals
     def test_commutation(self):
+        """Test if z checks commute with x checks and x logicals."""
         check_array = matrix_from_list(self.nr_qubits, self.checks)
         other_check_array = matrix_from_list(self.nr_qubits, self.other_checks)
         print("X checks and Z checks commute:", ~np.any((check_array.T @ other_check_array)%2))
         #print("X logicals and Z checks commute:", ~np.any((self.logicals.T @ z_checks)%2))
 
-    
+
     def __add__(self, other):
+        """
+        Combine two GateFinder objects into one.
+        Stacks the two CSS codes, with independent ansatz gates
+        """
         res = GateFinder(self.nr_qubits + other.nr_qubits)
         res.checks= self.checks + shift_loc_list(other.checks, self.nr_qubits)
         res.logicals = self.logicals + shift_loc_list(other.logicals, self.nr_qubits)
@@ -140,20 +171,26 @@ class GateFinder:
         res.extend_gate_orders(maxlev)
         for l in range(len(other.gates)):
             res.gates[l] += shift_loc_list(other.gates[l], self.nr_qubits)
-        return res                       
+        return res
 
 
-# gates is a list of pairs (l,loc). l is the power of the gate, i.e. there's a 1/2^(l+1) prefactor. loc is list of qubits where the gate acts.
-# checks is a list of list (pure-python sparse binary matrix)
 def pullback_homomorphism(nr_qubits, checks, gates):
+    """
+    Compute the pullback homomorphism from physical gates to check phase functions.
+
+    Parameters:
+        nr_qubits: Number of qubits of the CSS code on which the gate locations are specified
+        checks: X checks of the CSS code (list of list, like GateFinder.checks)
+        gates: List of ansatz gates (like GateFinder.gates)
+    """
     # transpose check matrix in sparse form - list of checks involving each qubit.
     checks_reverse = [[] for _ in range(nr_qubits)]
     for j, check in enumerate(checks):
         for i in check:
             checks_reverse[i].append(j)
-    
-    # enumerate all possible divisions of Lambda as a sum of k positive integers
+
     def weak_compositions(Lambda, k):
+        """Enumerate all possible divisions of Lambda as a sum of k positive integers."""
         if k == 1:
             yield (Lambda,)
         else:
@@ -197,7 +234,7 @@ def pullback_homomorphism(nr_qubits, checks, gates):
                     if gate_loc in check_gate_levels:
                         check_gate_levels[gate_loc] = max(check_gate_levels[gate_loc], lev)
                     else: check_gate_levels[gate_loc] = lev
-    
+
     # rescale all values according to the level
     for l, lcols in enumerate(pullback_columns):
         for i, col in enumerate(lcols):
@@ -237,10 +274,14 @@ def pullback_homomorphism(nr_qubits, checks, gates):
 
     return pullback, check_gate_locs
 
-# writes a set of gates as string
-# gates is the hom mapping to the group of physical gates
-# gate_locs is list of list of sets
 def gates_string(gates, gate_locs):
+    """
+    Write a set of gates as a string.
+
+    Parameters:
+        gates is: Hom object mapping from some abstract 2-group to the group of physical gates
+        gate_locs: Ansatz gates (like GateFinder.gates)
+    """
     gate_string = ""
     for lj in range(len(gates.dim1)):
         gate_string += f"order {2**(lj+1)}\n"
@@ -252,10 +293,14 @@ def gates_string(gates, gate_locs):
             gate_string = gate_string[:-2] + "\n"
     return gate_string
 
-# writes a gate as string
-# gate is a elem, corresponding to an element of the group of physical gates
-# gate_locs is list of list of sets
 def gate_string(gate, gate_locs):
+    """
+    Write an individual gate as a string.
+
+    Parameters:
+        gate: Elem object, representing a physical gate
+        gate_locs: Like GateFinder.gates
+    """
     gate_string = ""
     for li in range(len(gate.dim)):
         for i in range(gate.dim[li]):
@@ -263,8 +308,8 @@ def gate_string(gate, gate_locs):
                 gate_string += f"{gate[li][i]}/{2**(li+1)}*{list(gate_locs[li][i])}, "
     return gate_string[:-2]
 
-# generate matrix from a list of index lists - each list entry corresponds to one column, and the integers in the entry are the rows where the column is non-zero
 def matrix_from_list(nr_rows, index_list):
+    """Generate matrix from a list of index lists - each list entry corresponds to one column, and the integers in the entry are the rows where the column is non-zero."""
     check_list = []
     #print(index_list)
     for check_num in index_list:
@@ -276,14 +321,20 @@ def matrix_from_list(nr_rows, index_list):
 def list_from_matrix(matrix):
     return [(np.nonzero(matrix[:, i])[0]).tolist() for i in range(matrix.shape[1])]
 
-# helper class for analyzing translation-invariant codes in n dimensions
-# checks, gates, other_checks are the same as for transversal_gate_finder, just that a qubit number is replaced by a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
 class TIGateFinder:
+    """Helper class for analyzing translation-invariant codes in n dimensions.
+
+    Attributes:
+        dimension: spatial dimension of translation-invariant CSS code
+        nr_qubits: number of qubits *per unit cell*
+        checks: X checks
+        other_checks: Z checks (optional)
+        gates: Ansatz gates
+        Format for checks, other_checks, gates is the same as for GateFinder, just that a qubit number is replaced by a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
+    """
     def __init__(self, nr_qubits, dimension, checks = None, gates = None, other_checks = None):
-        self.nr_qubits = nr_qubits # number of qubits per unit cell
+        self.nr_qubits = nr_qubits
         self.dimension = dimension
-        # checks: list of checks per unit cell
-        # format: each check is a list of pairs (coordinate (numpy vector), internal qubit number)
         self.checks = []
         if checks is not None:
             self.add_checks(checks)
@@ -303,8 +354,8 @@ class TIGateFinder:
         self.check_qubits_valid(other_checks)
         self.other_checks += other_checks
 
-    # add empty sets for gates of orders up to l
     def extend_gate_orders(self, l):
+        """Reserve space for gates of orders up to 2^(l+1)."""
         if len(self.gates) <= l:
             self.gates += [[] for _ in range(l - len(self.gates) + 1)]
 
@@ -319,14 +370,16 @@ class TIGateFinder:
                     raise ValueError(f"Coordinate {coord} has wrong number of entries (should be {self.dimension})")
                 if intern < 0 or intern >= self.nr_qubits:
                     raise ValueError(f"Internal qubit number {intern} given but must be between 0<={intern}<{self.nr_qubits}")
-                
+
     def add_all_single_qubit_gates(self, l):
         for intern in range(self.nr_qubits):
             self.gates[l].append([((0,)*self.dimension, intern)])
 
-    # adds all gate locations of size k and phase-level l within each group in "groups".
-    # each group in groups is a list of pairs of coord tuple and internal qubit nr
     def add_gates_in_groups(self, groups, l, k):
+        """Add all gate locations of size k and phase-level l within each group in "groups".
+
+        Each group in groups is a list of pairs of coord tuple and internal qubit nr.
+        """
         self.extend_gate_orders(l)
         loc_set = set()
         for group in groups:
@@ -334,11 +387,13 @@ class TIGateFinder:
         self.gates[l] += list(map(set, loc_set))
 
 
-    # transform into a regular code by putting it on a finite lattice with twisted boundary conditions
-    # lattice: numpy array containing basis vectors. the rows are the vectors that are identified with the origin.
     def as_finite_code(self, lattice):
+        """Transform into a regular code by putting it on a finite lattice with twisted boundary conditions.
+
+        Arguments:
+            lattice: Matrix describing twisted periodic boundary conditions, used to construct a finite code from the unit-cell data. Numpy array whose *rows* are the vectors that are identified with the origin.
+        """
         lattice_hnf = fl.hnf(lattice)[0] # row-operation hnf
-        #print("hnf\n", lattice_hnf)
         periods = lattice_hnf.diagonal()
         total_dim = np.prod(periods)
         cum_dims = np.cumprod(periods)
@@ -352,9 +407,9 @@ class TIGateFinder:
 
         return tgf
 
-    # reduces a coordinate vector to lie within the parallelogram defined by the hnf
     @staticmethod
     def reduce_coordinate(coord, hnf):
+        """Reduce a coordinate vector to lie within the parallelogram defined by the hnf."""
         #print("coords before\n", coords)
         for d in range(len(coord)):
             offs = coord[d] // hnf[d,d]
@@ -364,32 +419,35 @@ class TIGateFinder:
     @staticmethod
     def nr_to_coord(nr, cum_dims, periods):
         return np.array(nr)[None] // cum_dims % periods
-    
-    # takes a pair of (coordinate vector modulo PBC lattice, internal qubit number) and transforms it into a global qubit number
-    # lattice_hnf: pbc lattice in hermite normal form, 
-    # cum_dims: cumulative product of diagonal of lattice_hnf starting from 1
-    # coord: unit cell coordinate (not necessarily reduced to the standard box)
-    # internal: internal qubit number
-    # output: qubit number
+
     @staticmethod
     def coord_to_qubit(lattice_hnf, cum_dims, total_dim, coord, internal):
+        """Take a pair of (coordinate vector modulo PBC lattice, internal qubit number) and transform it into a global qubit number.
+
+        Arguments:
+            lattice_hnf: pbc lattice in hermite normal form
+            cum_dims: cumulative product of diagonal of lattice_hnf starting from 1
+            coord: unit cell coordinate (not necessarily reduced to the standard box)
+            internal: internal qubit number
+            output: qubit number
+        """
         for d in range(len(coord)):
             offs = coord[d] // lattice_hnf[d,d]
             coord -= offs * lattice_hnf[d, :]
 
         return int(np.dot(coord, cum_dims) + internal * total_dim)
-    
-    # takes a list of lists of coordinates + internal qubit nr's and turns it into a list of list of qubits
+
     @staticmethod
     def generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, qubit_listlist):
+        """Take a list of lists of coordinates + internal qubit nr's and turn it into a list of list of qubits."""
         output_listlist = []
         for i in range(total_dim):
             shift_coord = TIGateFinder.nr_to_coord(i, cum_dims, periods)
             for qubit_list in qubit_listlist:
                 output_listlist.append([TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, coord+shift_coord, intern) for coord, intern in qubit_list])
-                
+
         return output_listlist
-    
+
 
     def __add__(self, other):
         if self.dimension != other.dimension:
@@ -402,10 +460,13 @@ class TIGateFinder:
         res.gates = self.gates
         res.extend_gate_orders(maxlev)
         for l in range(len(other.gates)):
-            res.gates[l] += shift_ti_loc_list(other.gates[l], self.nr_qubits)  
-        return res        
-        
+            res.gates[l] += shift_ti_loc_list(other.gates[l], self.nr_qubits)
+        return res
+
     def inverted_coordinates(self):
+        """
+        Invert all spatial coordinates
+        """
         def invert_coords(mlist):
             return [[((-np.array(coord)).tolist(),i) for coord, i in entry] for entry in mlist]
         return TIGateFinder(self.nr_qubits,
@@ -413,16 +474,19 @@ class TIGateFinder:
                                               checks = invert_coords(self.checks),
                                               other_checks = invert_coords(self.other_checks),
                                               gates = [invert_coords(gts) for gts in self.gates])
-    
-# shifting the internal qubit number (needed for addition of codes)
+
 def shift_ti_loc_list(loc_list, shift):
+    """Shift the internal qubit number (needed for addition of codes)."""
     return [[(coord, bit+shift) for coord, bit in loc] for loc in loc_list]
 
 def shift_loc_list(loc_list, shift):
     return [[bit+shift for bit in loc] for loc in loc_list]
 
-# shifts a translation-invariant gate location to a standard coordinate, where the "smallest" coordinate is zero. for "smallest" we first compare the coordinates lexicographically and then the internal qubit nr
 def normalize_ti_gate(gate):
+    """Shift a translation-invariant gate location to a standard coordinate, where the "smallest" coordinate is zero.
+
+    For "smallest" we first compare the coordinates lexicographically and then the internal qubit nr.
+    """
     coordmin, _ = min(gate)
     gate_normalized = set()
     for gt_coord, gt_intern in gate:
@@ -431,17 +495,20 @@ def normalize_ti_gate(gate):
     return gate_normalized
 
 
-# gates is a list of pairs (l,loc). l is the power of the gate, i.e. there's a 1/2^(l+1) prefactor. loc is list of qubits where the gate acts.
-# checks is a list of list (pure-python sparse binary matrix)
 def ti_pullback_homomorphism(nr_qubits, checks, gates):
+    """Compute the pullback homomorphism from physical gates to check phase functions.
+
+    gates is a list of pairs (l,loc). l is the power of the gate, i.e. there's a 1/2^(l+1) prefactor. loc is list of qubits where the gate acts.
+    checks is a list of list (pure-python sparse binary matrix)
+    """
     # transpose check matrix in sparse form - list of checks involving each qubit.
     checks_reverse = [[] for _ in range(nr_qubits)]
     for j, check in enumerate(checks):
         for i in check:
             checks_reverse[i].append(j)
-    
-    # enumerate all possible divisions of Lambda as a sum of k positive integers
+
     def weak_compositions(Lambda, k):
+        """Enumerate all possible divisions of Lambda as a sum of k positive integers."""
         if k == 1:
             yield (Lambda,)
         else:
@@ -485,7 +552,7 @@ def ti_pullback_homomorphism(nr_qubits, checks, gates):
                     if gate_loc in check_gate_levels:
                         check_gate_levels[gate_loc] = max(check_gate_levels[gate_loc], lev)
                     else: check_gate_levels[gate_loc] = lev
-    
+
     # rescale all values according to the level
     for l, lcols in enumerate(pullback_columns):
         for i, col in enumerate(lcols):
