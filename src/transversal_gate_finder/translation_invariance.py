@@ -81,6 +81,34 @@ class TIGateFinder:
         self.gates[l] += list(map(set, loc_set))
 
 
+    def consolidate_gates(self):
+        """Normalize and deduplicate the ansatz gates.
+
+        (1) shift each gate so its lexicographically smallest qubit sits at coordinate 0
+            (via normalize_ti_gate),
+        (2) within each order keep only one copy of identical gates, and
+        (3) drop any gate from self.gates[i] that also occurs in self.gates[j] for some j>i.
+
+        A gate that appears at several orders is therefore kept only at the highest one.
+        """
+        # canonical, hashable form for every gate
+        normalized = [[frozenset(normalize_ti_gate(gate)) for gate in lgates]
+                      for lgates in self.gates]
+
+        new_gates = []
+        for i, lgates in enumerate(normalized):
+            # all gates occurring at some strictly higher order
+            higher = set().union(*normalized[i+1:]) if i + 1 < len(normalized) else set()
+            seen = set()
+            kept = []
+            for gate in lgates:
+                if gate in seen or gate in higher:
+                    continue
+                seen.add(gate)
+                kept.append(set(gate))
+            new_gates.append(kept)
+        self.gates = new_gates
+
     def as_finite_code(self, lattice):
         """Transform into a regular code by putting it on a finite lattice with twisted boundary conditions.
 
@@ -208,6 +236,9 @@ def normalize_ti_gate(gate):
 
     For "smallest" we first compare the coordinates lexicographically and then the internal qubit nr.
     """
+    # normalize coord type to tuple first, so the min-comparison never mixes list/tuple
+    # coordinates (both occur in this codebase) and the output is always hashable.
+    gate = [(tuple(coord), intern) for coord, intern in gate]
     coordmin, _ = min(gate)
     gate_normalized = set()
     for gt_coord, gt_intern in gate:
