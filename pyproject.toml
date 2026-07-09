@@ -14,8 +14,12 @@ authors = [
 ]
 dependencies = [
     "numpy",
+    "python-flint",
     "twogroup-linalg @ git+https://github.com/andibau13/twogroup-linalg.git"
 ]
+
+[project.optional-dependencies]
+utils = ["fpylll"]
 
 [project.urls]
 Homepage = "https://github.com/username/my-project"

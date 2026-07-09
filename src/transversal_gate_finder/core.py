@@ -1,5 +1,4 @@
 import twogroup_linalg as lin
-from . import flint_wrappers as fl
 #import scipy.linalg
 import numpy as np
 from itertools import combinations, product

@@ -1,4 +1,10 @@
-from transversal_gate_finder import *
+from itertools import combinations, product
+
+import numpy as np
+import twogroup_linalg as lin
+
+from . import flint_wrappers as fl
+from .core import GateFinder
 
 class TIGateFinder:
     """Helper class for analyzing translation-invariant codes in n dimensions.
