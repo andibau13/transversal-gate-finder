@@ -174,6 +174,34 @@ def shift_ti_loc_list(loc_list, shift):
     return [[(coord, bit+shift) for coord, bit in loc] for loc in loc_list]
 
 
+def transpose_ti_map(loc_listlist, nr_out):
+    """Transpose a translation-invariant Z2-linear map given in sparse form.
+
+    The input ``loc_listlist`` has one list per internal input number ``j`` (the basis
+    element ``(0, j)`` at the origin). Each such list holds the pairs ``(coord, i)`` of
+    output basis elements that ``(0, j)`` maps to; by translation invariance ``(c, j)``
+    maps to ``{(c + coord, i)}``.
+
+    The transpose sends output basis elements to input basis elements. Since
+    ``(0, j) -> (coord, i)`` means ``M[(coord, i), (0, j)] = 1``, the transpose has
+    ``(0, i) -> (-coord, j)``.
+
+    Arguments:
+        loc_listlist: the map to transpose, as a list of lists of (coord, internal) pairs.
+        nr_out: number of internal output basis elements of the map, i.e. the length of
+            the transposed list. Must be larger than the maximum internal number
+            appearing in the entries of ``loc_listlist``.
+
+    Returns:
+        The transposed map in the same sparse format, a list of ``nr_out`` lists.
+    """
+    transposed = [[] for _ in range(nr_out)]
+    for j, loc_list in enumerate(loc_listlist):
+        for coord, i in loc_list:
+            transposed[i].append((tuple(-c for c in coord), j))
+    return transposed
+
+
 
 def normalize_ti_gate(gate):
     """Shift a translation-invariant gate location to a standard coordinate, where the "smallest" coordinate is zero.
