@@ -173,6 +173,40 @@ class GateFinder:
         return res
 
 
+def weak_compositions(Lambda, k):
+    """Enumerate all possible divisions of Lambda as a sum of k positive integers."""
+    if k == 1:
+        yield (Lambda,)
+    else:
+        for x in range(Lambda + 1):
+            for rest in weak_compositions(Lambda - x, k - 1):
+                yield (x, *rest)
+
+def pullback_column(check_lists, l):
+    """
+    Compute the pullback of a single ansatz gate location of order 2^(l+1).
+
+    Parameters:
+        check_lists: For each qubit in the gate location, the list of checks containing that qubit
+        l: The order of the ansatz gate is 2^(l+1)
+
+    Returns:
+        Dict mapping check combinations (frozensets of entries of check_lists) to the integer numerator of their phase factor, relative to the denominator 2^(l+1)
+    """
+    k = len(check_lists)
+    column = {}
+    for Lambda in range(l+1):
+        for Lambdaxs in weak_compositions(Lambda, k):
+            Lxss = [combinations(Aix, Lambdax+1) for Aix, Lambdax in zip(check_lists, Lambdaxs)]
+            for Lxs in product(*Lxss):
+                Lx_union = frozenset(set().union(*(set(Lx) for Lx in Lxs)))
+                val = int((-2)**Lambda)
+                if Lx_union in column:
+                    column[Lx_union] += val
+                else:
+                    column[Lx_union] = val
+    return column
+
 def pullback_homomorphism(nr_qubits, checks, gates):
     """
     Compute the pullback homomorphism from qubit phase functions (combinations of ansatz gates) to check phase functions.
@@ -188,40 +222,24 @@ def pullback_homomorphism(nr_qubits, checks, gates):
         for i in check:
             checks_reverse[i].append(j)
 
-    def weak_compositions(Lambda, k):
-        """Enumerate all possible divisions of Lambda as a sum of k positive integers."""
-        if k == 1:
-            yield (Lambda,)
-        else:
-            for x in range(Lambda + 1):
-                for rest in weak_compositions(Lambda - x, k - 1):
-                    yield (x, *rest)
-
     # for each gate order l, and each physical gate location lgate, create a dictionary corresponding to the pullback of that gate location
-    pullback_columns = []
-    for l, lgates in enumerate(gates):
-        pullback_columns_l = []
-        for lgate in lgates:
-            k = len(lgate)
-            pullback_column = {}
-            for Lambda in range(l+1): #
-                for Lambdaxs in weak_compositions(Lambda, k):
-                    Lxss = [combinations(Aix, Lambdax+1) for Aix, Lambdax in zip([checks_reverse[g] for g in lgate], Lambdaxs)]
-                    #print("Lxss", [set(xx) for xx in Lxss])
-                    #print("test2", set(Lxss[0]))
-                    #for xxxx in Lxss[0]:
-                    #    print("test", xxxx)
-                    #print("productLxss", list(product(*Lxss)))
-                    for Lxs in product(*Lxss):
-                        Lx_union = frozenset(set().union(*(set(Lx) for Lx in Lxs)))
-                        val = int((-2)**Lambda)
-                        if Lx_union in pullback_column:
-                            pullback_column[Lx_union] += val
-                        else:
-                            pullback_column[Lx_union] = val
-            pullback_columns_l.append(pullback_column)
-        pullback_columns.append(pullback_columns_l)
+    pullback_columns = [[pullback_column([checks_reverse[g] for g in lgate], l) for lgate in lgates]
+                        for l, lgates in enumerate(gates)]
 
+    return assemble_pullback(pullback_columns, [len(lgates) for lgates in gates])
+
+def assemble_pullback(pullback_columns, gate_dims):
+    """
+    Assemble pullback columns into a Hom object.
+
+    Parameters:
+        pullback_columns: pullback_columns[l][i] is the pullback of the ith ansatz gate of order 2^(l+1), a dict as returned by pullback_column
+        gate_dims: Number of ansatz gates at each order
+
+    Returns:
+        pullback: Hom object with one row for each check combination with non-trivial phase factor
+        check_gate_locs: List of check gate locations (the dict keys of the columns) for each level
+    """
     # generate dict for all the maximum levels for each qubit tuple with a check gate
     check_gate_levels = {}
     for l, lcols in enumerate(pullback_columns):
@@ -241,12 +259,10 @@ def pullback_homomorphism(nr_qubits, checks, gates):
             for (gate_loc, val) in col.items():
                 if gate_loc in check_gate_levels: # if val is zero mod l for gate_loc everywhere, then gate_loc is not in check_gate_levels
                     lev = check_gate_levels[gate_loc]
-                    if lev >= l:
-                        val_rescaled = val * 2**(lev-l)
-                    else:
-                        val_rescaled = val // 2**(l-lev)
-                    val_rescaled %= 2**(lev+1)
-                    col_rescaled[gate_loc] = val_rescaled
+                    if lev < l:
+                        val = val // 2**(l-lev)
+                    # Hom coefficients between Z_{2^(l+1)} and Z_{2^(lev+1)} are valued in Z_{2^(min(lev,l)+1)}
+                    col_rescaled[gate_loc] = val % 2**(min(lev, l)+1)
             lcols[i] = col_rescaled
 
     # count number of check gate locations for each level
@@ -259,8 +275,6 @@ def pullback_homomorphism(nr_qubits, checks, gates):
         check_gate_indices[lev][check_gate] = check_dims[lev]
         check_gate_locs[lev].append(check_gate)
         check_dims[lev] += 1
-
-    gate_dims = [len(lgates) for lgates in gates]
 
     # assemble into dense matrix
     pullback = lin.Hom.zeros(check_dims, gate_dims)

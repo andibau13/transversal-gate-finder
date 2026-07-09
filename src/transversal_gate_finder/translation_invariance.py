@@ -4,7 +4,7 @@ import numpy as np
 import twogroup_linalg as lin
 
 from . import flint_wrappers as fl
-from .core import GateFinder
+from .core import GateFinder, assemble_pullback, pullback_column
 
 class TIGateFinder:
     """Helper class for analyzing translation-invariant codes in n dimensions.
@@ -202,6 +202,47 @@ class TIGateFinder:
                                               checks = invert_coords(self.checks),
                                               other_checks = invert_coords(self.other_checks),
                                               gates = [invert_coords(gts) for gts in self.gates])
+
+def ti_pullback_homomorphism(nr_qubits, checks, gates):
+    """Compute the pullback homomorphism from translation-invariant qubit phase functions to translation-invariant check phase functions.
+
+    A translation-invariant gate applies the same phase function at all translates of its
+    location, so the pullback has one column for each translation-invariant ansatz gate
+    location, and one row for each combination of checks (up to translation) with a
+    non-trivial phase factor in the image of the pullback. The kernel of the returned Hom
+    object corresponds to the translation-invariant transversal gates.
+
+    Parameters:
+        nr_qubits: Number of qubits per unit cell
+        checks: X checks in translation-invariant format (like TIGateFinder.checks)
+        gates: Ansatz gates in translation-invariant format (like TIGateFinder.gates)
+
+    Returns:
+        pullback: Hom object
+        check_gate_locs: List of check gate locations for each level; each location is a
+            frozenset of pairs of coordinate tuple and internal check nr
+    """
+    # for each internal qubit nr, the list of (coord, check nr) pairs of checks acting on qubit (0, intern)
+    checks_reverse = transpose_ti_map(checks, nr_qubits)
+
+    pullback_columns = []
+    for l, lgates in enumerate(gates):
+        pullback_columns_l = []
+        for lgate in lgates:
+            # the checks acting on qubit (qcoord, intern) are the checks acting on (0, intern), shifted by qcoord
+            check_lists = [[(tuple(qc+cc for qc, cc in zip(qcoord, ccoord)), j) for ccoord, j in checks_reverse[intern]]
+                           for qcoord, intern in lgate]
+            column = pullback_column(check_lists, l)
+            # check combinations related by translation contribute to the same translation-invariant phase factor
+            column_ti = {}
+            for check_gate, val in column.items():
+                check_gate_normalized = frozenset(normalize_ti_gate(check_gate))
+                column_ti[check_gate_normalized] = column_ti.get(check_gate_normalized, 0) + val
+            pullback_columns_l.append(column_ti)
+        pullback_columns.append(pullback_columns_l)
+
+    return assemble_pullback(pullback_columns, [len(lgates) for lgates in gates])
+
 
 def shift_ti_loc_list(loc_list, shift):
     """Shift the internal qubit number (needed for addition of codes)."""
