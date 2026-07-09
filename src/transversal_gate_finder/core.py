@@ -175,7 +175,7 @@ class GateFinder:
 
 def pullback_homomorphism(nr_qubits, checks, gates):
     """
-    Compute the pullback homomorphism from physical gates to check phase functions.
+    Compute the pullback homomorphism from qubit phase functions (combinations of ansatz gates) to check phase functions.
 
     Parameters:
         nr_qubits: Number of qubits of the CSS code on which the gate locations are specified
