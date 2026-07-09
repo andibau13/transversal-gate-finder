@@ -182,6 +182,7 @@ def normalize_ti_gate(gate):
     return gate_normalized
 
 
+# this is only copy+paste so far
 def ti_pullback_homomorphism(nr_qubits, checks, gates):
     """Compute the pullback homomorphism from physical gates to check phase functions.
 
