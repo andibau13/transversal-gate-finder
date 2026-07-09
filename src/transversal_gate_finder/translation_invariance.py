@@ -109,6 +109,12 @@ class TIGateFinder:
             new_gates.append(kept)
         self.gates = new_gates
 
+    def print_gates(self):
+        for l, lgates in enumerate(self.gates):
+            print(f"\nLevel {l}")
+            for gate in lgates:
+                print(gate)
+
     def as_finite_code(self, lattice):
         """Transform into a regular code by putting it on a finite lattice with twisted boundary conditions.
 
