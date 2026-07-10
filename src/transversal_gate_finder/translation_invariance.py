@@ -16,7 +16,7 @@ class TIGateFinder:
         other_checks: Z checks (optional)
         gates: Ansatz gates
         Format for checks, other_checks, gates is the same as for GateFinder, just that a qubit number is replaced by a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
-        transphys_stabphys: Hom from the abstract group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates. None before find_gates() is called.
+        transphys_allphys: Hom from the abstract group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates. None before find_gates() is called.
     """
     def __init__(self, nr_qubits, dimension, checks = None, gates = None, other_checks = None):
         self.nr_qubits = nr_qubits
@@ -135,6 +135,15 @@ class TIGateFinder:
             tgf.add_gates(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.gates[l]), l)
         tgf.add_other_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks))
 
+        if self.transphys_allphys is not None:
+            # unfold the translation-invariant transversal gates: repeat the TI gate once for every unit cell.
+            # generate_ti_list orders the finite gates cell-major, so each level block is vertically tiled.
+            K = self.transphys_allphys
+            unfolded = lin.Hom.zeros([total_dim * d for d in K.dim0], K.dim1)
+            for l in range(len(K.dim0)):
+                unfolded[l, :] = np.tile(K[l, :], (total_dim, 1))
+            tgf.transphys_allphys = unfolded
+
         return tgf
 
     @staticmethod
@@ -179,7 +188,12 @@ class TIGateFinder:
         return output_listlist
 
     def find_gates(self):
-        self.pullb, gateloc = ti_pullback_homomorphism(self.nr_qubits, self.checks, self.gates)
+        """Compute the space of all translation-invariant transversal gates.
+
+        Sets self.transphys_allphys: Hom from the abstract 2-group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates.
+        """
+        allphys_allcheck, _ = ti_pullback_homomorphism(self.nr_qubits, self.checks, self.gates)
+        self.transphys_allphys = allphys_allcheck.kernel()
 
     def __add__(self, other):
         if self.dimension != other.dimension:

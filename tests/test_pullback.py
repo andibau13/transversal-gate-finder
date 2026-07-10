@@ -197,13 +197,16 @@ def test_ti_kernel_unfolds_to_finite_kernel():
         dim, nq, checks, gates = rand_ti_code_and_gates(rng)
         code = tg.TIGateFinder(nq, dim, checks=[list(c) for c in checks],
                                gates=[[set(g) for g in lg] for lg in gates])
-        pullback, _ = ti_pullback_homomorphism(nq, checks, gates)
-        K = pullback.kernel()
-        assert (pullback @ K).is_zero()
+        code.find_gates()
+        K = code.transphys_allphys
+        assert (code.pullb @ K).is_zero()
 
         L = 4
         fin = code.as_finite_code(np.diag([L] * dim))
         fin_pullback, _ = pullback_homomorphism(fin.nr_qubits, fin.checks, fin.gates)
+
+        # the unfolded transversal gates of the finite code lie in the finite kernel
+        assert (fin_pullback @ fin.transphys_allphys).is_zero()
 
         for li in range(len(K.dim1)):
             for g in range(K.dim1[li]):
@@ -213,6 +216,7 @@ def test_ti_kernel_unfolds_to_finite_kernel():
                 # same coefficient at all translates; finite gates are ordered cell-major
                 v_fin = np.concatenate([np.tile(np.asarray(c_ti[l]), L ** dim) for l in range(3)])
                 assert (fin_pullback @ lin.Elem(v_fin, fin_pullback.dim1)).is_zero()
+                assert np.array_equal((fin.transphys_allphys @ gen).v, v_fin)
 
 
 def test_ti_ccz_3d_toric():
