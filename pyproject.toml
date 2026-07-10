@@ -22,8 +22,8 @@ dependencies = [
 utils = ["fpylll"]
 
 [project.urls]
-Homepage = "https://github.com/username/my-project"
-Repository = "https://github.com/username/my-project"
+Homepage = "https://github.com/andibau13/transversal-gate-finder"
+Repository = "https://github.com/andibau13/transversal-gate-finder"
 
 [tool.setuptools.packages.find]
 where = ["src"]
