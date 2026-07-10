@@ -16,6 +16,7 @@ class TIGateFinder:
         other_checks: Z checks (optional)
         gates: Ansatz gates
         Format for checks, other_checks, gates is the same as for GateFinder, just that a qubit number is replaced by a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
+        transphys_stabphys: Hom from the abstract group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates. None before find_gates() is called.
     """
     def __init__(self, nr_qubits, dimension, checks = None, gates = None, other_checks = None):
         self.nr_qubits = nr_qubits
@@ -31,6 +32,7 @@ class TIGateFinder:
             self.extend_gate_orders(len(gates))
             for l in range(len(gates)):
                 self.add_gates(gates[l], l)
+        self.transphys_allphys = None
 
     def add_checks(self, checks):
         self.check_qubits_valid(checks)
@@ -176,6 +178,8 @@ class TIGateFinder:
 
         return output_listlist
 
+    def find_gates(self):
+        self.pullb, gateloc = ti_pullback_homomorphism(self.nr_qubits, self.checks, self.gates)
 
     def __add__(self, other):
         if self.dimension != other.dimension:
@@ -242,6 +246,45 @@ def ti_pullback_homomorphism(nr_qubits, checks, gates):
         pullback_columns.append(pullback_columns_l)
 
     return assemble_pullback(pullback_columns, [len(lgates) for lgates in gates])
+
+
+def ti_local_pullback(nr_qubits, checks, gates, active_gates):
+    """Compute the pullback homomorphism for a locally supported gate configuration on a translation-invariant code.
+
+    In contrast to ti_pullback_homomorphism, the gates are not applied at all translates
+    of their locations, but only at the prescribed locations in active_gates. So each
+    active gate contributes only once to the pullback of a fixed check combination, and
+    the check combinations are labeled by absolute coordinates instead of translation
+    classes. The kernel of the returned Hom object corresponds to the locally supported
+    transversal gates on the prescribed locations.
+
+    Parameters:
+        nr_qubits: Number of qubits per unit cell
+        checks: X checks in translation-invariant format (like TIGateFinder.checks)
+        gates: Ansatz gate locations in translation-invariant format (like TIGateFinder.gates)
+        active_gates: active_gates[l] is a list of pairs of a shift coordinate (int tuple)
+            and an internal gate number indexing gates[l]. Each entry labels one column of
+            the pullback: the gate location gates[l][i], shifted by the coordinate.
+
+    Returns:
+        pullback: Hom object
+        check_gate_locs: List of check gate locations for each level; each location is a
+            frozenset of pairs of coordinate tuple and internal check nr
+    """
+    # for each internal qubit nr, the list of (coord, check nr) pairs of checks acting on qubit (0, intern)
+    checks_reverse = transpose_ti_map(checks, nr_qubits)
+
+    pullback_columns = []
+    for l, lactive in enumerate(active_gates):
+        pullback_columns_l = []
+        for shift, gate_nr in lactive:
+            # the checks acting on qubit (shift + qcoord, intern) are the checks acting on (0, intern), shifted by shift + qcoord
+            check_lists = [[(tuple(sc+qc+cc for sc, qc, cc in zip(shift, qcoord, ccoord)), j) for ccoord, j in checks_reverse[intern]]
+                           for qcoord, intern in gates[l][gate_nr]]
+            pullback_columns_l.append(pullback_column(check_lists, l))
+        pullback_columns.append(pullback_columns_l)
+
+    return assemble_pullback(pullback_columns, [len(lactive) for lactive in active_gates])
 
 
 def shift_ti_loc_list(loc_list, shift):

@@ -9,7 +9,7 @@ import twogroup_linalg as lin
 
 import transversal_gate_finder as tg
 from transversal_gate_finder.core import pullback_homomorphism, matrix_from_list
-from transversal_gate_finder.translation_invariance import ti_pullback_homomorphism
+from transversal_gate_finder.translation_invariance import ti_pullback_homomorphism, ti_local_pullback
 
 
 def phase_function(gates, coeffs, a):
@@ -149,6 +149,44 @@ def test_ti_pullback_matches_direct_evaluation():
             lhs = sum(sum_translates(gates[l], [int(c) / 2 ** (l + 1) for c in coeffs[l]], a) for l in range(3))
             rhs = sum(sum_translates(check_gate_locs[li], [int(v) / 2 ** (li + 1) for v in image[li]], alpha)
                       for li in range(len(image.dim)))
+            assert np.isclose((lhs - rhs) % 1.0, 0.0) or np.isclose((lhs - rhs) % 1.0, 1.0)
+
+
+def test_ti_local_pullback_matches_direct_evaluation():
+    """Local pullback image evaluated on the checks must equal S_c(A alpha), where the
+    gates sit only at the prescribed active locations (no translates)."""
+    rng = np.random.default_rng(3)
+    for trial in range(8):
+        dim, nq, checks, gates = rand_ti_code_and_gates(rng)
+        # random active locations for each gate type
+        active_gates = [[(tuple(int(x) for x in rng.integers(-2, 3, size=dim)), int(rng.integers(0, len(gates[l]))))
+                         for _ in range(int(rng.integers(1, 4)))] for l in range(3)]
+
+        pullback, check_gate_locs = ti_local_pullback(nq, checks, gates, active_gates)
+
+        coeffs = [rng.integers(0, 2 ** (l + 1), size=len(active_gates[l])) for l in range(3)]
+        image = pullback @ lin.Elem(np.concatenate(coeffs), pullback.dim1)
+
+        for rep in range(5):
+            alpha = {(cell, j): 1 for cell in product(range(-2, 3), repeat=dim)
+                     for j in range(len(checks)) if rng.random() < 0.4}
+            a = {}
+            for (cell, j) in alpha:
+                for coord, i in checks[j]:
+                    q = (tuple(c + u for c, u in zip(coord, cell)), i)
+                    a[q] = a.get(q, 0) ^ 1
+
+            lhs = 0.0
+            for l, lactive in enumerate(active_gates):
+                for gi, (shift, gate_nr) in enumerate(lactive):
+                    if all(a.get((tuple(sc + qc for sc, qc in zip(shift, qcoord)), i), 0)
+                           for qcoord, i in gates[l][gate_nr]):
+                        lhs += int(coeffs[l][gi]) / 2 ** (l + 1)
+            rhs = 0.0
+            for li in range(len(image.dim)):
+                for ri, loc in enumerate(check_gate_locs[li]):
+                    if all(alpha.get((ucoord, j), 0) for ucoord, j in loc):
+                        rhs += int(image[li][ri]) / 2 ** (li + 1)
             assert np.isclose((lhs - rhs) % 1.0, 0.0) or np.isclose((lhs - rhs) % 1.0, 1.0)
 
 
