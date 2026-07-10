@@ -199,10 +199,11 @@ def test_ti_kernel_unfolds_to_finite_kernel():
                                gates=[[set(g) for g in lg] for lg in gates])
         code.find_gates()
         K = code.transphys_allphys
-        assert (code.pullb @ K).is_zero()
+        ti_pullback, _ = ti_pullback_homomorphism(nq, code.checks, code.gates)
+        assert (ti_pullback @ K).is_zero()
 
         L = 4
-        fin = code.as_finite_code(np.diag([L] * dim))
+        fin = code.as_finite_code(np.diag([L] * dim), auto_logicals=False)
         fin_pullback, _ = pullback_homomorphism(fin.nr_qubits, fin.checks, fin.gates)
 
         # the unfolded transversal gates of the finite code lie in the finite kernel

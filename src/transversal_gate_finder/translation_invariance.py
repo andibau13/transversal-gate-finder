@@ -15,7 +15,7 @@ class TIGateFinder:
         checks: X checks
         other_checks: Z checks (optional)
         gates: Ansatz gates
-        Format for checks, other_checks, gates is the same as for GateFinder, just that a qubit number is replaced by a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
+        Format for checks, other_checks, gates is the same as for GateFinder: each check/gate is a set of qubit identifiers, where a qubit identifier is a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
         transphys_allphys: Hom from the abstract group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates. None before find_gates() is called.
     """
     def __init__(self, nr_qubits, dimension, checks = None, gates = None, other_checks = None):
@@ -35,11 +35,9 @@ class TIGateFinder:
         self.transphys_allphys = None
 
     def add_checks(self, checks):
-        self.check_qubits_valid(checks)
-        self.checks += checks
+        self.checks += self.standardize_locs(checks)
     def add_other_checks(self, other_checks):
-        self.check_qubits_valid(other_checks)
-        self.other_checks += other_checks
+        self.other_checks += self.standardize_locs(other_checks)
 
     def extend_gate_orders(self, l):
         """Reserve space for gates of orders up to 2^(l+1)."""
@@ -48,30 +46,37 @@ class TIGateFinder:
 
     def add_gates(self, gates, l):
         self.extend_gate_orders(l)
-        self.check_qubits_valid(gates)
-        self.gates[l] += gates
+        self.gates[l] += self.standardize_locs(gates)
 
-    def check_qubits_valid(self, listlist):
+    def standardize_locs(self, listlist):
+        """Validate a list of checks/gates and bring it into standard form:
+        each check/gate a set of pairs (coordinate tuple, internal qubit number)."""
+        standardized = []
         for mlist in listlist:
+            qubits = set()
             for coord, intern in mlist:
+                coord = tuple(coord)
                 if len(coord) != self.dimension:
                     raise ValueError(f"Coordinate {coord} has wrong number of entries (should be {self.dimension})")
                 if intern < 0 or intern >= self.nr_qubits:
                     raise ValueError(f"Internal qubit number {intern} given but must be between 0<={intern}<{self.nr_qubits}")
+                qubits.add((coord, intern))
+            standardized.append(qubits)
+        return standardized
 
     def add_all_single_qubit_gates(self, l):
         self.extend_gate_orders(l)
         for intern in range(self.nr_qubits):
-            self.gates[l].append([((0,)*self.dimension, intern)])
+            self.gates[l].append({((0,)*self.dimension, intern)})
 
     def add_gates_in_groups(self, groups, l, k):
         """Add all gate locations of size k and phase-level l within each group in "groups".
 
-        Each group in groups is a list of pairs of coord tuple and internal qubit nr.
+        Each group in groups is a collection of pairs of coord tuple and internal qubit nr.
         """
         self.extend_gate_orders(l)
         loc_set = set()
-        for group in groups:
+        for group in self.standardize_locs(groups):
             loc_set.update(set(map(frozenset, map(normalize_ti_gate, combinations(group, k)))))
         self.gates[l] += list(map(set, loc_set))
 
@@ -79,7 +84,7 @@ class TIGateFinder:
         """Add all gate locations of size k and phase-level l within each subset of qubits supported on the set of coordinates.
         """
         self.extend_gate_orders(l)
-        qubits = [(coord, intern) for coord in group for intern in range(self.nr_qubits)]
+        qubits = [(tuple(coord), intern) for coord in group for intern in range(self.nr_qubits)]
         loc_set = set(map(frozenset, map(normalize_ti_gate, combinations(qubits, k))))
         self.gates[l] += list(map(set, loc_set))
 
@@ -205,11 +210,11 @@ class TIGateFinder:
         if self.dimension != other.dimension:
             raise ValueError("Space(time) dimensions of added codes must agree.")
         res = TIGateFinder(self.nr_qubits + other.nr_qubits, self.dimension)
-        res.checks= self.checks + shift_ti_loc_list(other.checks, self.nr_qubits)
-        res.other_checks = self.other_checks + shift_ti_loc_list(other.other_checks, self.nr_qubits)
+        res.checks = [set(check) for check in self.checks] + shift_ti_loc_list(other.checks, self.nr_qubits)
+        res.other_checks = [set(check) for check in self.other_checks] + shift_ti_loc_list(other.other_checks, self.nr_qubits)
 
         maxlev = max(len(self.gates), len(other.gates))
-        res.gates = self.gates
+        res.gates = [[set(gate) for gate in lgates] for lgates in self.gates]
         res.extend_gate_orders(maxlev)
         for l in range(len(other.gates)):
             res.gates[l] += shift_ti_loc_list(other.gates[l], self.nr_qubits)
@@ -220,7 +225,7 @@ class TIGateFinder:
         Invert all spatial coordinates
         """
         def invert_coords(mlist):
-            return [[((-np.array(coord)).tolist(),i) for coord, i in entry] for entry in mlist]
+            return [{(tuple(-c for c in coord), i) for coord, i in entry} for entry in mlist]
         return TIGateFinder(self.nr_qubits,
                                               self.dimension,
                                               checks = invert_coords(self.checks),
@@ -309,7 +314,7 @@ def ti_local_pullback(nr_qubits, checks, gates, active_gates):
 
 def shift_ti_loc_list(loc_list, shift):
     """Shift the internal qubit number (needed for addition of codes)."""
-    return [[(coord, bit+shift) for coord, bit in loc] for loc in loc_list]
+    return [{(coord, bit+shift) for coord, bit in loc} for loc in loc_list]
 
 
 def transpose_ti_map(loc_listlist, nr_out):
@@ -345,10 +350,8 @@ def normalize_ti_gate(gate):
     """Shift a translation-invariant gate location to a standard coordinate, where the "smallest" coordinate is zero.
 
     For "smallest" we first compare the coordinates lexicographically and then the internal qubit nr.
+    Expects the gate in standard form: qubit identifiers are pairs (coordinate tuple, internal qubit nr).
     """
-    # normalize coord type to tuple first, so the min-comparison never mixes list/tuple
-    # coordinates (both occur in this codebase) and the output is always hashable.
-    gate = [(tuple(coord), intern) for coord, intern in gate]
     coordmin, _ = min(gate)
     gate_normalized = set()
     for gt_coord, gt_intern in gate:
@@ -360,6 +363,6 @@ def normalize_ti_gate(gate):
 def twobga_code(dimension, poly1, poly2):
     """Creates an "infinite" abelian 2-block group-algebra code from two polynomials. After compactification with as_finite_code() this is a true 2-block group-algebra code."""
     code = TIGateFinder(2, dimension)
-    code.add_checks([[(coord,0) for coord in poly1] + [(coord,1) for coord in poly2]])
-    code.add_other_checks([[((-np.array(coord)).tolist(),1) for coord in poly1] + [((-np.array(coord)).tolist(),0) for coord in poly2]])
+    code.add_checks([[(tuple(coord), 0) for coord in poly1] + [(tuple(coord), 1) for coord in poly2]])
+    code.add_other_checks([[(tuple(-c for c in coord), 1) for coord in poly1] + [(tuple(-c for c in coord), 0) for coord in poly2]])
     return code

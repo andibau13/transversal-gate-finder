@@ -10,24 +10,33 @@ class GateFinder:
 
     Attributes:
         nr_qubits: number of qubits in the CSS code
-        checks: List of X checks, each specified by a qubit list
-        logicals: List of X logicals, each specified by a qubit list
-        other_checks: List of Z checks (optional).
-        gates: Ansatz gates from which the physical transversal gates will consist. List; gates[l] is a list of all ansatz gates or order 2^(l+1), that is, with prefactor 1/2^(l+1) (for example T is l=2, CS or S are l=1). gates[l][i] is the set of qubits participating in the gate, a frozenset of int.
+        checks: List of X checks, each specified by a set of qubit numbers
+        logicals: List of X logicals, each specified by a set of qubit numbers
+        other_checks: List of Z checks (optional), each specified by a set of qubit numbers
+        gates: Ansatz gates from which the physical transversal gates will consist. List; gates[l] is a list of all ansatz gates or order 2^(l+1), that is, with prefactor 1/2^(l+1) (for example T is l=2, CS or S are l=1). gates[l][i] is the set of qubits participating in the gate, a set of int.
     """
     def __init__(self, nr_qubits, checks = None, gates = None, logicals = None, other_checks = None):
         self.nr_qubits = nr_qubits
-        self.checks = checks if checks is not None else []
-        self.logicals = logicals if logicals is not None else []
-        self.other_checks = other_checks if other_checks is not None else []
-        self.gates = gates if gates is not None else []
+        self.checks = []
+        if checks is not None:
+            self.add_checks(checks)
+        self.logicals = []
+        if logicals is not None:
+            self.add_logicals(logicals)
+        self.other_checks = []
+        if other_checks is not None:
+            self.add_other_checks(other_checks)
+        self.gates = []
+        if gates is not None:
+            for l, lgates in enumerate(gates):
+                self.add_gates(lgates, l)
 
     def add_checks(self, checks):
-        self.checks += checks
+        self.checks += [set(check) for check in checks]
     def add_logicals(self, logicals):
-        self.logicals += logicals
+        self.logicals += [set(logical) for logical in logicals]
     def add_other_checks(self, other_checks):
-        self.other_checks += other_checks
+        self.other_checks += [set(check) for check in other_checks]
 
 
     def extend_gate_orders(self, l):
@@ -46,7 +55,7 @@ class GateFinder:
 
     def add_gates(self, gates, l):
         self.extend_gate_orders(l)
-        self.gates[l] += gates
+        self.gates[l] += [set(gate) for gate in gates]
 
     def add_all_singlequbit_gates(self, l):
         """Add single-qubit ansatz gates of order 2^(l+1) at all qubits."""
@@ -166,11 +175,11 @@ class GateFinder:
         Stacks the two CSS codes, with independent ansatz gates
         """
         res = GateFinder(self.nr_qubits + other.nr_qubits)
-        res.checks= self.checks + shift_loc_list(other.checks, self.nr_qubits)
-        res.logicals = self.logicals + shift_loc_list(other.logicals, self.nr_qubits)
-        res.other_checks = self.other_checks + shift_loc_list(other.other_checks, self.nr_qubits)
+        res.checks = [set(check) for check in self.checks] + shift_loc_list(other.checks, self.nr_qubits)
+        res.logicals = [set(logical) for logical in self.logicals] + shift_loc_list(other.logicals, self.nr_qubits)
+        res.other_checks = [set(check) for check in self.other_checks] + shift_loc_list(other.other_checks, self.nr_qubits)
         maxlev = max(len(self.gates), len(other.gates))
-        res.gates = self.gates
+        res.gates = [[set(gate) for gate in lgates] for lgates in self.gates]
         res.extend_gate_orders(maxlev)
         for l in range(len(other.gates)):
             res.gates[l] += shift_loc_list(other.gates[l], self.nr_qubits)
@@ -217,7 +226,7 @@ def pullback_homomorphism(nr_qubits, checks, gates):
 
     Parameters:
         nr_qubits: Number of qubits of the CSS code on which the gate locations are specified
-        checks: X checks of the CSS code (list of list, like GateFinder.checks)
+        checks: X checks of the CSS code (list of qubit sets, like GateFinder.checks)
         gates: List of ansatz gates (like GateFinder.gates)
     """
     # transpose check matrix in sparse form - list of checks involving each qubit.
@@ -306,7 +315,7 @@ def gates_string(gates, gate_locs):
             for li in range(len(gates.dim0)):
                 for i in range(gates.dim0[li]):
                     if gates[li, lj][i, j] != 0:
-                        gate_string += f"{gates[li, lj][i, j]}/{2**(min(li, lj)+1)}*{list(gate_locs[li][i])}, "
+                        gate_string += f"{gates[li, lj][i, j]}/{2**(min(li, lj)+1)}*{sorted(gate_locs[li][i])}, "
             gate_string = gate_string[:-2] + "\n"
     return gate_string
 
@@ -322,21 +331,22 @@ def gate_string(gate, gate_locs):
     for li in range(len(gate.dim)):
         for i in range(gate.dim[li]):
             if gate[li][i] != 0:
-                gate_string += f"{gate[li][i]}/{2**(li+1)}*{list(gate_locs[li][i])}, "
+                gate_string += f"{gate[li][i]}/{2**(li+1)}*{sorted(gate_locs[li][i])}, "
     return gate_string[:-2]
 
 def matrix_from_list(nr_rows, index_list):
-    """Generate matrix from a list of index lists - each list entry corresponds to one column, and the integers in the entry are the rows where the column is non-zero."""
+    """Generate matrix from a list of index sets - each list entry corresponds to one column, and the integers in the entry are the rows where the column is non-zero."""
     check_list = []
-    #print(index_list)
     for check_num in index_list:
         check = np.zeros((nr_rows,), dtype=int)
-        check[check_num] = 1
+        check[list(check_num)] = 1
         check_list.append(check)
+    if not check_list:
+        return np.zeros((nr_rows, 0), dtype=int)
     return np.array(check_list).T
 
 def list_from_matrix(matrix):
-    return [(np.nonzero(matrix[:, i])[0]).tolist() for i in range(matrix.shape[1])]
+    return [set((np.nonzero(matrix[:, i])[0]).tolist()) for i in range(matrix.shape[1])]
 
 def shift_loc_list(loc_list, shift):
-    return [[bit+shift for bit in loc] for loc in loc_list]
+    return [{bit+shift for bit in loc} for loc in loc_list]
