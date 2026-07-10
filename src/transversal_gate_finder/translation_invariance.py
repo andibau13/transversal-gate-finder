@@ -47,6 +47,7 @@ class TIGateFinder:
             self.gates += [[] for _ in range(l - len(self.gates) + 1)]
 
     def add_gates(self, gates, l):
+        self.extend_gate_orders(l)
         self.check_qubits_valid(gates)
         self.gates[l] += gates
 
@@ -117,12 +118,14 @@ class TIGateFinder:
             for gate in lgates:
                 print(gate)
 
-    def as_finite_code(self, lattice):
+    def as_finite_code(self, lattice, auto_logicals = True):
         """Transform into a regular code by putting it on a finite lattice with twisted boundary conditions.
 
         Arguments:
             lattice: Matrix describing twisted periodic boundary conditions, used to construct a finite code from the unit-cell data. Numpy array whose *rows* are the vectors that are identified with the origin.
+            auto_logicals: If True, set self.logicals from self.other_checks via GateFinder.logicals_from_other_checks()
         """
+        lattice = np.asarray(lattice, dtype=int)
         lattice_hnf = fl.hnf(lattice)[0] # row-operation hnf
         periods = lattice_hnf.diagonal()
         total_dim = np.prod(periods)
@@ -134,6 +137,9 @@ class TIGateFinder:
         for l in range(len(self.gates)):
             tgf.add_gates(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.gates[l]), l)
         tgf.add_other_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks))
+
+        if auto_logicals:
+            tgf.logicals_from_other_checks()
 
         if self.transphys_allphys is not None:
             # unfold the translation-invariant transversal gates: repeat the TI gate once for every unit cell.

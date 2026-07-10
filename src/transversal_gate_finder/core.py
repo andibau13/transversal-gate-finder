@@ -113,11 +113,15 @@ class GateFinder:
         
         allphys_allcheck = self.pullback_checks() # map all physical -> all check
         self.transphys_allphys = allphys_allcheck.kernel() # map transversal physical -> all physical
+        self.find_logical_action()
+
+    def find_logical_action(self):
         allphys_alllog, self.alllog_locs = self.pullback_logicals() # map all physical -> all logical
         transphys_alllog = allphys_alllog @ self.transphys_allphys # map transversal physical -> all logical
         self.translog_alllog, self.transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
         stabphys_transphys, self.rep_find_helper = self.transphys_translog.kernel(return_solve_helper = True) # stabilizer physical -> transversal physical
         self.stabphys_allphys = self.transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
+
 
     def print_transversal_logicals(self):
         """
