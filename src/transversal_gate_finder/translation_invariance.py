@@ -123,12 +123,15 @@ class TIGateFinder:
             for gate in lgates:
                 print(gate)
 
-    def as_finite_code(self, lattice, auto_logicals = True):
+    def as_finite_code(self, lattice, auto_logicals = True, ti_logicals = None, manual_logicals = None, manual_gates = None):
         """Transform into a regular code by putting it on a finite lattice with twisted boundary conditions.
 
         Arguments:
             lattice: Matrix describing twisted periodic boundary conditions, used to construct a finite code from the unit-cell data. Numpy array whose *rows* are the vectors that are identified with the origin.
-            auto_logicals: If True, set self.logicals from self.other_checks via GateFinder.logicals_from_other_checks()
+            auto_logicals: If True (default), set the logicals of the finite code from self.other_checks via GateFinder.logicals_from_other_checks().
+            ti_logicals: Optional list of X logicals in translation-invariant format (like self.checks), which are transformed into finite-code logicals like the checks and gates, i.e. repeated once for every unit cell.
+            manual_logicals: Optional list of X logicals given in (coord, internal) format; in contrast to ti_logicals these are not repeated for every unit cell, but provide a convenient way of defining individual finite-code logicals.
+            manual_gates: Additional ansatz gates for the finite code, in the same format as self.gates. In contrast to self.gates, they are not repeated for every unit cell; the (coord, internal) qubit specifiers just provide a convenient way of defining individual finite-code gate locations.
         """
         lattice = np.asarray(lattice, dtype=int)
         lattice_hnf = fl.hnf(lattice)[0] # row-operation hnf
@@ -137,22 +140,38 @@ class TIGateFinder:
         cum_dims = np.cumprod(periods)
         cum_dims = np.insert(cum_dims, 0, 1)[:-1]
 
+        def to_finite_qubits(loc_listlist):
+            """Turn (coord, internal) specifiers into finite qubit numbers, without repeating per unit cell."""
+            return [{TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, np.array(coord), intern) for coord, intern in loc}
+                    for loc in self.standardize_locs(loc_listlist)]
+
         tgf = GateFinder(total_dim * self.nr_qubits)
         tgf.add_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.checks))
         for l in range(len(self.gates)):
             tgf.add_gates(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.gates[l]), l)
+        if manual_gates is not None:
+            for l, lgates in enumerate(manual_gates):
+                tgf.add_gates(to_finite_qubits(lgates), l)
         tgf.add_other_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks))
 
+        # logicals derived from the Z checks (if requested); must come first since it overwrites tgf.logicals
         if auto_logicals:
             tgf.logicals_from_other_checks()
+        # translation-invariant logicals: one copy for every unit cell (like the checks)
+        if ti_logicals is not None:
+            tgf.add_logicals(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.standardize_locs(ti_logicals)))
+        # manual logicals: finite-code specifiers, not repeated per unit cell
+        if manual_logicals is not None:
+            tgf.add_logicals(to_finite_qubits(manual_logicals))
 
         if self.transphys_allphys is not None:
             # unfold the translation-invariant transversal gates: repeat the TI gate once for every unit cell.
-            # generate_ti_list orders the finite gates cell-major, so each level block is vertically tiled.
+            # generate_ti_list orders the finite gates cell-major, so each level block is vertically tiled;
+            # manual gates come after the unfolded ones at each level and get zero coefficients.
             K = self.transphys_allphys
-            unfolded = lin.Hom.zeros([total_dim * d for d in K.dim0], K.dim1)
+            unfolded = lin.Hom.zeros([len(lgates) for lgates in tgf.gates], K.dim1)
             for l in range(len(K.dim0)):
-                unfolded[l, :] = np.tile(K[l, :], (total_dim, 1))
+                unfolded[l, :][:total_dim * K.dim0[l], :] = np.tile(K[l, :], (total_dim, 1))
             tgf.transphys_allphys = unfolded
 
         return tgf

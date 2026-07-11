@@ -77,6 +77,22 @@ class GateFinder:
         self.add_gates_in_groups(self.checks, l, k)
 
 
+    def remove_redundant_checks(self):
+        """Remove X checks that are Z2-linear combinations of the other X checks."""
+        check_array = matrix_from_list(self.nr_qubits, self.checks)
+        pivots = lin.get_pivots(lin.z2lin.rref(check_array))
+        self.checks = [self.checks[i] for i in pivots]
+
+    def remove_redundant_logicals(self):
+        """Remove X logicals that are Z2-linear combinations of the other X logicals and the X checks.
+
+        Logicals are only defined modulo the X checks (stabilizers), so a logical equal to another logical times a product of checks is considered redundant.
+        """
+        check_array = matrix_from_list(self.nr_qubits, self.checks)
+        logical_array = matrix_from_list(self.nr_qubits, self.logicals)
+        _, logical_pivots = lin.remove_image(check_array, logical_array)
+        self.logicals = [self.logicals[i] for i in logical_pivots]
+
     def logicals_from_other_checks(self):
         """
         Initialize X logicals from X checks and Z logicals (self.other_checks, if given)
@@ -223,9 +239,10 @@ class GateFinder:
     def test_commutation(self):
         """Test if z checks commute with x checks and x logicals."""
         check_array = matrix_from_list(self.nr_qubits, self.checks)
+        logical_array = matrix_from_list(self.nr_qubits, self.logicals)
         other_check_array = matrix_from_list(self.nr_qubits, self.other_checks)
         print("X checks and Z checks commute:", ~np.any((check_array.T @ other_check_array)%2))
-        #print("X logicals and Z checks commute:", ~np.any((self.logicals.T @ z_checks)%2))
+        print("X logicals and Z checks commute:", ~np.any((logical_array.T @ other_check_array)%2))
 
 
     def __add__(self, other):
