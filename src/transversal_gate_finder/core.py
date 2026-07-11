@@ -128,6 +128,7 @@ class GateFinder:
         allphys_alllog, self.alllog_locs = self.pullback_logicals() # map all physical -> all logical
         transphys_alllog = allphys_alllog @ self.transphys_allphys # map transversal physical -> all logical
         self.translog_alllog, self.transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
+        _, self.log_find_helper = self.translog_alllog.kernel(return_solve_helper = True) # allows test_if_implemented to solve for a preimage in the transversal logicals
         stabphys_transphys, self.rep_find_helper = self.transphys_translog.kernel(return_solve_helper = True) # stabilizer physical -> transversal physical
         self.stabphys_allphys = self.transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
 
@@ -160,6 +161,64 @@ class GateFinder:
     def print_phys_rep(self, logic_gate):
         rep = self.find_phys_rep(logic_gate)
         print(gate_string(rep, self.gates))
+
+    def test_if_implemented(self, gates, coeffs):
+        """
+        Can be called after find_gates().
+        Test whether a given diagonal logical gate has a transversal implementation.
+
+        Parameters:
+            gates: Gate locations in the same format as self.gates, except that the qubit numbers refer to the logical qubits of the CSS code
+            coeffs: Int list with one coefficient per gate location, flattened over all orders (an Elem coefficient vector for "gates")
+
+        Returns:
+            None if the logical gate is not implemented by any transversal gate. Otherwise an Elem over the abstract 2-group of transversal logicals (the source of self.translog_alllog), which can be passed to find_phys_rep to obtain a physical implementation.
+        """
+        loc_levels = {frozenset(loc): (lev, i)
+                      for lev, llocs in enumerate(self.alllog_locs) for i, loc in enumerate(llocs)}
+
+        target = lin.Elem.zeros(self.translog_alllog.dim0)
+        pos = 0
+        for l, lgates in enumerate(gates):
+            for gate in lgates:
+                c = int(coeffs[pos]) % 2**(l+1)
+                pos += 1
+                if c == 0:
+                    continue
+                entry = loc_levels.get(frozenset(gate))
+                if entry is None:
+                    return None
+                lev, i = entry
+                if lev >= l:
+                    val = c * 2**(lev-l)
+                else:
+                    # the location only supports logical gates of order 2^(lev+1)
+                    if c % 2**(l-lev) != 0:
+                        return None
+                    val = c // 2**(l-lev)
+                target[lev][i] = (int(target[lev][i]) + val) % 2**(lev+1)
+
+        try:
+            return self.translog_alllog.solve_with_helper(target, self.log_find_helper)
+        except ValueError:
+            return None
+
+    def find_phys_rep_free(self, gates, coeffs):
+        """
+        Can be called after find_gates().
+        Find a physical representative for a logical gate given in free form (gate locations on the logical qubits plus coefficients, see test_if_implemented), or None if the gate has no transversal implementation.
+        """
+        translog = self.test_if_implemented(gates, coeffs)
+        if translog is None:
+            return None
+        return self.find_phys_rep(translog.v)
+
+    def print_phys_rep_free(self, gates, coeffs):
+        rep = self.find_phys_rep_free(gates, coeffs)
+        if rep is None:
+            print("no transversal implementation")
+        else:
+            print(gate_string(rep, self.gates))
 
     def test_commutation(self):
         """Test if z checks commute with x checks and x logicals."""
