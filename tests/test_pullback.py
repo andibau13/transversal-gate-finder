@@ -268,7 +268,7 @@ def test_ti_ccz_3d_toric():
 def test_steane_end_to_end():
     """S gates on all qubits of the Steane code give exactly one order-4 transversal logical (S dagger); T is not transversal."""
     steane = tg.GateFinder(7, checks=[[0,3,4,6], [1,4,5,6], [2,3,5,6]], logicals=[[0,2,3]])
-    steane.gates.add_all_single_qubit_gates(1)
+    steane.gates.add_all_single_locs(1)
     steane.find_gates()
     assert steane.translog_alllog.dim1 == [0, 1]
     # logical S is transversally implemented, logical T is not
