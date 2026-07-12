@@ -4,7 +4,7 @@ import numpy as np
 import twogroup_linalg as lin
 
 from . import flint_wrappers as fl
-from .core import GateFinder, assemble_pullback, pullback_column
+from .core import GateFinder, assemble_pullback, pullback_column, quotient_image_by_image
 
 class TIGateFinder:
     """Helper class for analyzing translation-invariant codes in n dimensions.
@@ -15,8 +15,10 @@ class TIGateFinder:
         checks: X checks
         other_checks: Z checks (optional)
         gates: Ansatz gates
+        local_gates: Active gate locations for locally supported (non-translation-invariant) gate configurations, used by find_gates_nonlocal. Format like the active_gates parameter of ti_local_pullback: local_gates[l] is a list of pairs of a shift coordinate (int tuple) and an internal gate number indexing gates[l].
         Format for checks, other_checks, gates is the same as for GateFinder: each check/gate is a set of qubit identifiers, where a qubit identifier is a pair of (1) shift coordinate (int tuple) and (2) unit-cell-internal qubit number
         transphys_allphys: Hom from the abstract group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates. None before find_gates() is called.
+        transphys_nonlocal: Surjective Hom from the abstract group of translation-invariant transversal gates to its quotient by sums of translates of local transversal gates. None before find_gates_nonlocal() is called.
     """
     def __init__(self, nr_qubits, dimension, checks = None, gates = None, other_checks = None):
         self.nr_qubits = nr_qubits
@@ -32,7 +34,9 @@ class TIGateFinder:
             self.extend_gate_orders(len(gates))
             for l in range(len(gates)):
                 self.add_gates(gates[l], l)
+        self.local_gates = []
         self.transphys_allphys = None
+        self.transphys_nonlocal = None
 
     def add_checks(self, checks):
         self.checks += self.standardize_locs(checks)
@@ -220,10 +224,44 @@ class TIGateFinder:
     def find_gates(self):
         """Compute the space of all translation-invariant transversal gates.
 
-        Sets self.transphys_allphys: Hom from the abstract 2-group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates.
+        Sets self.transphys_allphys: Hom from the abstract 2-group of translation-invariant transversal gates to the group of configurations of all physical ansatz gates. Also caches a solve helper for that Hom in self.transphys_solve_helper.
         """
         allphys_allcheck, _ = ti_pullback_homomorphism(self.nr_qubits, self.checks, self.gates)
         self.transphys_allphys = allphys_allcheck.kernel()
+        _, self.transphys_solve_helper = self.transphys_allphys.kernel(return_solve_helper = True)
+
+    def find_gates_nonlocal(self):
+        """Compute the translation-invariant transversal gates modulo sums of translates of local transversal gates.
+
+        First calls find_gates() to get the group T of translation-invariant transversal gates. Then computes the group of locally supported transversal gates on the active locations self.local_gates as the kernel of ti_local_pullback. Summing such a local gate configuration over all lattice translates yields a translation-invariant configuration (the shift of each active gate is forgotten); these are quotiented out of T.
+
+        Sets self.transphys_nonlocal: surjective Hom from T to the quotient 2-group. Elements of the quotient are classes of TI transversal gates that differ by sums of translates of local transversal gates; nontrivial classes cannot be generated locally.
+        """
+        self.find_gates()
+        local_pullback, _ = ti_local_pullback(self.nr_qubits, self.checks, self.gates, self.local_gates)
+        local_transversal = local_pullback.kernel()
+        # sum over all translates: each active local gate (shift, gate_nr) contributes to the TI gate gate_nr
+        translate_sum = lin.Hom.zeros(self.transphys_allphys.dim0, local_pullback.dim1)
+        for l, lactive in enumerate(self.local_gates):
+            for a, (shift, gate_nr) in enumerate(lactive):
+                translate_sum[l, l][gate_nr, a] = 1
+        self.transphys_nonlocal = quotient_image_by_image(self.transphys_allphys, translate_sum @ local_transversal, self.transphys_solve_helper)
+        _, self.rep_find_helper = self.transphys_nonlocal.kernel(return_solve_helper = True)
+
+    def find_phys_rep(self, nonlocal_gate):
+        """
+        Can be called after find_gates_nonlocal().
+        Find a translation-invariant transversal gate configuration representing a given class of the quotient by local transversal gates.
+
+        Parameters:
+            nonlocal_gate: coefficient list for an Elem over the quotient 2-group (self.transphys_nonlocal.dim0)
+
+        Returns:
+            Elem over the group of TI ansatz gate configurations (like the columns of self.transphys_allphys)
+        """
+        nonlocal_elem = lin.Elem(np.array(nonlocal_gate), self.transphys_nonlocal.dim0)
+        trans_rep = self.transphys_nonlocal.solve_with_helper(nonlocal_elem, self.rep_find_helper)
+        return self.transphys_allphys @ trans_rep
 
     def __add__(self, other):
         if self.dimension != other.dimension:

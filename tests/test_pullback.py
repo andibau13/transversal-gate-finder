@@ -240,6 +240,34 @@ def test_ti_ccz_3d_toric():
     assert np.all(K.M == 1)
 
 
+def test_quotient_image_by_image():
+    """quotient_image_by_image(K, K @ R) must be the cokernel of R: it kills exactly im(R), is surjective, and has the complementary size."""
+    from transversal_gate_finder.core import quotient_image_by_image, transpose_hom
+
+    rng = np.random.default_rng(5)
+    for trial in range(10):
+        dims_G = [int(rng.integers(0, 3)) for _ in range(3)]
+        dims_A = [int(rng.integers(0, 3)) for _ in range(3)]
+        A = lin.Hom.rand(dims_A, dims_G)
+        K = A.kernel()  # injective T -> G
+        dims_S = [int(rng.integers(0, 3)) for _ in range(3)]
+        R = lin.Hom.rand(K.dim1, dims_S)
+        P = K @ R  # im(P) is contained in im(K) by construction
+
+        # transpose is functorial (contravariant), i.e. really is the duality
+        assert np.array_equal(transpose_hom(P).M, (transpose_hom(R) @ transpose_hom(K)).M)
+
+        q = quotient_image_by_image(K, P)
+        # ker(q) contains im(R) (f = R is the unique solution of K f = P)
+        assert (q @ R).is_zero()
+        # q is surjective: its dual is injective
+        assert sum(transpose_hom(q).kernel().dim1) == 0
+        # log2 sizes: |T| = |im R| * |Q|, so ker(q) is not larger than im(R)
+        log2size = lambda dims: sum((l + 1) * n for l, n in enumerate(dims))
+        im_dims = R.epi_mono()[0].dim1
+        assert log2size(K.dim1) == log2size(im_dims) + log2size(q.dim0)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

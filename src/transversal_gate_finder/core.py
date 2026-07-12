@@ -376,6 +376,47 @@ def assemble_pullback(pullback_columns, gate_dims):
 
     return pullback, check_gate_locs
 
+def transpose_hom(X):
+    """Transpose (dual) of a 2-group homomorphism.
+
+    Under the perfect pairing <x, y> = sum_i x_i*y_i / 2^(l_i+1), every finite abelian 2-group is its own dual, and the dual of a homomorphism is given by the plain block-wise transpose of its coefficient matrix, with source and target 2-groups interchanged. (The stored block coefficients are unchanged since the enhancement factor 2^max(0, i-j) turns into 2^max(0, j-i) under dualization, and the value group Z_{2^(min(i,j)+1)} is symmetric.)
+    """
+    return lin.Hom(X.M.T.copy(), X.dim1, X.dim0)
+
+def quotient_image_by_image(K, P, K_solve_helper = None):
+    """Quotient the image of an injective homomorphism K: T -> G by the image of a homomorphism P: S -> G, given the promise im(P) is a subgroup of im(K).
+
+    Works by (1) solving K f = P for f: S -> T column-wise (unique since K is injective), and (2) computing the cokernel of f as the transpose of the kernel of the transpose (kernel and cokernel are exchanged under the self-duality of finite abelian 2-groups).
+
+    Parameters:
+        K: injective Hom T -> G
+        P: Hom S -> G with im(P) contained in im(K)
+        K_solve_helper: optional solve helper for K, as returned by K.kernel(return_solve_helper=True); computed on the fly if not given
+
+    Returns:
+        The quotient projection q: T -> Q, a surjective Hom onto the quotient 2-group Q = im(K)/im(P), whose kernel is the preimage of im(P) under K
+    """
+    if K_solve_helper is None:
+        _, K_solve_helper = K.kernel(return_solve_helper = True)
+
+    # solve K f = P, one column (generator of the source of P) at a time
+    f = lin.Hom.zeros(K.dim1, P.dim1)
+    for l in range(len(P.dim1)):
+        for j in range(P.dim1[l]):
+            gen = lin.Elem.zeros(P.dim1)
+            gen[l][j] = 1
+            x = K.solve_with_helper(P @ gen, K_solve_helper)
+            for i in range(len(K.dim1)):
+                if i <= l:
+                    f[i, l][:, j] = x[i]
+                else:
+                    # image of the generator at level i is c * 2^(i-l) with c the stored block coefficient;
+                    # divisibility is guaranteed since 2^(l+1) * x = 0 by injectivity of K
+                    assert np.all(x[i] % 2**(i-l) == 0)
+                    f[i, l][:, j] = x[i] // 2**(i-l)
+
+    return transpose_hom(transpose_hom(f).kernel())
+
 def gates_string(gates, gate_locs):
     """
     Write a set of gates as a string.
