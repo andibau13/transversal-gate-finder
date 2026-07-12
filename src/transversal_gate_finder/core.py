@@ -7,10 +7,16 @@ The main entry point is the GateFinder class. The underlying structures are:
 - Z2Hom: a Z2-linear map in sparse column form (used for checks and logicals).
 - TwoGroupHom: a homomorphism between finite abelian 2-groups (wrapping a
   twogroup_linalg.Hom), with optional PhaseLocs attached to source and target.
+- TwoGroupElem: an element of a finite abelian 2-group (wrapping a
+  twogroup_linalg.Elem), with an optional PhaseLocs.
 
 Conventions follow twogroup_linalg: index 0 refers to the target (rows) and
 index 1 to the source (columns) of a homomorphism, so phase_locs0 describes the
 target generators and phase_locs1 the source generators of a TwoGroupHom.
+
+Two homomorphisms/elements compose only if their phase_locs objects are the
+*same* Python object (checked with "is"); phase_locs objects are always passed
+by reference, never copied.
 """
 from __future__ import annotations
 
@@ -19,6 +25,18 @@ from typing import Callable, Hashable, Iterable, Optional, Sequence, Union
 
 import numpy as np
 import twogroup_linalg as lin
+
+
+def _check_phase_locs_dims(phase_locs, dims: Sequence[int], name: str) -> None:
+    """Check that a phase-locs object has exactly dims[l] generators at each level l."""
+    pdims = phase_locs.dims
+    for l, d in enumerate(dims):
+        count = pdims[l] if l < len(pdims) else 0
+        if count != d:
+            raise ValueError(f"{name} has {count} generators at level {l} but the homomorphism expects {d}")
+    for l in range(len(dims), len(pdims)):
+        if pdims[l] != 0:
+            raise ValueError(f"{name} has generators at level {l} beyond the homomorphism's target/source")
 
 
 class PhaseLocs:
@@ -61,6 +79,23 @@ class PhaseLocs:
                     raise ValueError(f"Support index {i} out of range 0..{self.dim - 1}")
             self.locs[l].append(loc)
 
+    def add_all_single_qubit_gates(self, l: int) -> None:
+        """Add all singleton supports {i} at level l (single-qubit ansatz gates of order 2^(l+1))."""
+        self.add_locs([{i} for i in range(self.dim)], l)
+
+    def add_gates_in_groups(self, groups, l: int, k: int) -> None:
+        """Add all k-subset supports at level l within each group in "groups".
+
+        Each group is a collection of indices (a set of qubits); groups may also be
+        given as a Z2Hom (e.g. a GateFinder's checks), in which case its columns are used.
+        """
+        if isinstance(groups, Z2Hom):
+            groups = groups.h
+        loc_set = set()
+        for group in groups:
+            loc_set.update(set(map(frozenset, combinations(group, k))))
+        self.add_locs(map(set, loc_set), l)
+
     def consolidate(self) -> None:
         """Remove duplicate supports, keeping a support only at the highest level where it occurs."""
         current = set()
@@ -68,21 +103,6 @@ class PhaseLocs:
             llocs = set(map(frozenset, self.locs[l])) - current
             current |= llocs
             self.locs[l] = list(map(set, llocs))
-
-    def elem_to_string(self, elem: lin.Elem) -> str:
-        """Write an element of the 2-group of phase functions as a string."""
-        terms = []
-        for li in range(len(elem.dim)):
-            for i in range(elem.dim[li]):
-                if elem[li][i] != 0:
-                    terms.append(f"{elem[li][i]}/{2 ** (li + 1)}*{sorted(self.locs[li][i])}")
-        return ", ".join(terms)
-
-    def __eq__(self, other) -> bool:
-        if not isinstance(other, PhaseLocs):
-            return NotImplemented
-        return self.dim == other.dim and list(map(lambda ls: list(map(frozenset, ls)), self.locs)) \
-            == list(map(lambda ls: list(map(frozenset, ls)), other.locs))
 
 
 class Z2Hom:
@@ -114,12 +134,17 @@ class Z2Hom:
             self.h.append(col)
 
     def to_array(self) -> np.ndarray:
-        """Dense 0/1 coefficient matrix of shape (dim0, dim1)."""
-        return matrix_from_list(self.dim0, self.h)
+        """Dense 0/1 coefficient matrix of shape (dim0, dim1). Each column has ones at its stored row indices."""
+        matrix = np.zeros((self.dim0, len(self.h)), dtype=int)
+        for j, col in enumerate(self.h):
+            matrix[list(col), j] = 1
+        return matrix
 
     @staticmethod
     def from_array(matrix: np.ndarray) -> "Z2Hom":
-        return Z2Hom(matrix.shape[0], list_from_matrix(matrix))
+        """Build a Z2Hom from a dense 0/1 matrix; each column becomes the set of its non-zero rows."""
+        columns = [np.nonzero(matrix[:, j])[0].tolist() for j in range(matrix.shape[1])]
+        return Z2Hom(matrix.shape[0], columns)
 
     def transpose(self) -> "Z2Hom":
         transposed = [[] for _ in range(self.dim0)]
@@ -137,6 +162,20 @@ class Z2Hom:
 
     def is_zero(self) -> bool:
         return all(len(col) == 0 for col in self.h)
+
+    def remove_redundant_columns(self, relative_to: Optional["Z2Hom"] = None) -> None:
+        """Drop columns that are Z2-linear combinations of the earlier columns.
+
+        In place: keeps only a maximal Z2-independent subset of the columns (the first
+        one of each dependency). If relative_to is given, columns already contained in
+        the span of relative_to's columns are also dropped (used e.g. to reduce logicals
+        modulo the checks; then relative_to must have the same number of rows as self).
+        """
+        if relative_to is None:
+            pivots = lin.get_pivots(lin.z2lin.rref(self.to_array()))
+        else:
+            _, pivots = lin.remove_image(relative_to.to_array(), self.to_array())
+        self.h = [self.h[i] for i in pivots]
 
     def phase_pullback(self, phase_locs: PhaseLocs) -> "TwoGroupHom":
         """Pull back phase functions along this Z2-linear map.
@@ -163,11 +202,6 @@ class Z2Hom:
         return TwoGroupHom(h, phase_locs0=target_locs, phase_locs1=phase_locs)
 
 
-def _locs_match(a, b) -> bool:
-    """Test whether two optional phase-locs objects describe the same 2-group generators."""
-    return a is b or a == b
-
-
 class TwoGroupHom:
     """Homomorphism between finite abelian 2-groups, with optional phase function supports.
 
@@ -179,6 +213,10 @@ class TwoGroupHom:
     """
 
     def __init__(self, h: lin.Hom, phase_locs0=None, phase_locs1=None):
+        if phase_locs0 is not None:
+            _check_phase_locs_dims(phase_locs0, h.dim0, "phase_locs0")
+        if phase_locs1 is not None:
+            _check_phase_locs_dims(phase_locs1, h.dim1, "phase_locs1")
         self.h = h
         self.phase_locs0 = phase_locs0
         self.phase_locs1 = phase_locs1
@@ -191,13 +229,21 @@ class TwoGroupHom:
     def dim1(self) -> list[int]:
         return self.h.dim1
 
-    def __matmul__(self, other: Union["TwoGroupHom", lin.Elem]):
-        """Composition with another TwoGroupHom, or application to an Elem."""
+    def __matmul__(self, other: Union["TwoGroupHom", "TwoGroupElem", lin.Elem]):
+        """Composition with another TwoGroupHom, or application to a (TwoGroup)Elem.
+
+        Composition/application is allowed only if the shared phase_locs are the *same*
+        object (checked with "is"); a raw lin.Elem carries no phase_locs and is accepted.
+        """
+        if isinstance(other, TwoGroupElem):
+            if other.phase_locs is not None and other.phase_locs is not self.phase_locs1:
+                raise ValueError("Application requires elem.phase_locs is self.phase_locs1")
+            return TwoGroupElem(self.h @ other.e, phase_locs=self.phase_locs0)
         if isinstance(other, lin.Elem):
-            return self.h @ other
+            return TwoGroupElem(self.h @ other, phase_locs=self.phase_locs0)
         if isinstance(other, TwoGroupHom):
-            if not _locs_match(other.phase_locs0, self.phase_locs1):
-                raise ValueError("Composition requires other.phase_locs0 == self.phase_locs1")
+            if other.phase_locs0 is not self.phase_locs1:
+                raise ValueError("Composition requires other.phase_locs0 is self.phase_locs1")
             return TwoGroupHom(self.h @ other.h, self.phase_locs0, other.phase_locs1)
         return NotImplemented
 
@@ -247,6 +293,41 @@ class TwoGroupHom:
         return out
 
 
+class TwoGroupElem:
+    """Element of a finite abelian 2-group, with optional phase function supports.
+
+    Attributes:
+        e: lin.Elem holding the coefficient vector
+        phase_locs: PhaseLocs (or TIPhaseLocs) describing the supports of the generators
+            (parallel to e.dim), or None if the group is abstract
+    """
+
+    def __init__(self, e: lin.Elem, phase_locs=None):
+        if phase_locs is not None:
+            _check_phase_locs_dims(phase_locs, e.dim, "phase_locs")
+        self.e = e
+        self.phase_locs = phase_locs
+
+    @property
+    def dim(self) -> list[int]:
+        return self.e.dim
+
+    @property
+    def v(self) -> np.ndarray:
+        return self.e.v
+
+    def to_string(self) -> str:
+        """Write the element as a string; generators labeled by their phase_locs support if given, else (level, index)."""
+        terms = []
+        for li in range(len(self.e.dim)):
+            for i in range(self.e.dim[li]):
+                c = self.e[li][i]
+                if c != 0:
+                    label = sorted(self.phase_locs.locs[li][i]) if self.phase_locs is not None else (li, i)
+                    terms.append(f"{c}/{2 ** (li + 1)}*{label}")
+        return ", ".join(terms)
+
+
 class GateFinder:
     """
     Helper class for finding diagonal transversal gates on a given CSS code.
@@ -259,76 +340,16 @@ class GateFinder:
         gates: Ansatz gates from which the physical transversal gates will consist,
             as a PhaseLocs object. gates.locs[l] lists all ansatz gates of order 2^(l+1),
             that is, with prefactor 1/2^(l+1) (for example T is l=2, CS or S are l=1);
-            each gate is the set of participating qubits.
+            each gate is the set of participating qubits. Add gates via gates.add_locs,
+            gates.add_all_single_qubit_gates, gates.add_gates_in_groups, etc.
     """
 
     def __init__(self, nr_qubits: int, checks=None, gates=None, logicals=None, other_checks=None):
         self.nr_qubits = nr_qubits
-        self.checks = Z2Hom(nr_qubits)
-        self.logicals = Z2Hom(nr_qubits)
-        self.other_checks = Z2Hom(nr_qubits)
-        self.gates = PhaseLocs(nr_qubits)
-        if checks is not None:
-            self.add_checks(checks)
-        if logicals is not None:
-            self.add_logicals(logicals)
-        if other_checks is not None:
-            self.add_other_checks(other_checks)
-        if gates is not None:
-            for l, lgates in enumerate(gates):
-                self.add_gates(lgates, l)
-
-    def add_checks(self, checks) -> None:
-        self.checks.add_columns(checks)
-
-    def add_logicals(self, logicals) -> None:
-        self.logicals.add_columns(logicals)
-
-    def add_other_checks(self, other_checks) -> None:
-        self.other_checks.add_columns(other_checks)
-
-    def extend_gate_orders(self, l: int) -> None:
-        """Reserve space to include gates of orders up to l."""
-        self.gates.extend_levels(l)
-
-    def consolidate_gates(self) -> None:
-        """Remove duplicate gates, and remove gate locations of order l if they are already present at a higher order."""
-        self.gates.consolidate()
-
-    def add_gates(self, gates: Iterable[Iterable[int]], l: int) -> None:
-        self.gates.add_locs(gates, l)
-
-    def add_all_singlequbit_gates(self, l: int) -> None:
-        """Add single-qubit ansatz gates of order 2^(l+1) at all qubits."""
-        self.gates.add_locs([{i} for i in range(self.nr_qubits)], l)
-
-    def add_gates_in_groups(self, groups, l: int, k: int) -> None:
-        """Add all ansatz gates involving k qubits of order 2^(l+1) within each group in "groups"."""
-        if isinstance(groups, Z2Hom):
-            groups = groups.h
-        loc_set = set()
-        for group in groups:
-            loc_set.update(set(map(frozenset, combinations(group, k))))
-        self.gates.add_locs(map(set, loc_set), l)
-
-    def add_gates_in_checks(self, l: int, k: int) -> None:
-        """
-        Add all ansatz gates involving k qubits of order 2^(l+1) within each X check
-        """
-        self.add_gates_in_groups(self.checks, l, k)
-
-    def remove_redundant_checks(self) -> None:
-        """Remove X checks that are Z2-linear combinations of the other X checks."""
-        pivots = lin.get_pivots(lin.z2lin.rref(self.checks.to_array()))
-        self.checks = Z2Hom(self.nr_qubits, [self.checks.h[i] for i in pivots])
-
-    def remove_redundant_logicals(self) -> None:
-        """Remove X logicals that are Z2-linear combinations of the other X logicals and the X checks.
-
-        Logicals are only defined modulo the X checks (stabilizers), so a logical equal to another logical times a product of checks is considered redundant.
-        """
-        _, logical_pivots = lin.remove_image(self.checks.to_array(), self.logicals.to_array())
-        self.logicals = Z2Hom(self.nr_qubits, [self.logicals.h[i] for i in logical_pivots])
+        self.checks = Z2Hom(nr_qubits, checks)
+        self.logicals = Z2Hom(nr_qubits, logicals)
+        self.other_checks = Z2Hom(nr_qubits, other_checks)
+        self.gates = PhaseLocs(nr_qubits, gates)
 
     def logicals_from_other_checks(self) -> None:
         """
@@ -337,12 +358,6 @@ class GateFinder:
         zker = lin.z2lin.kernel(self.other_checks.to_array().T)
         ind_xchecks, log_nrs = lin.remove_image(self.checks.to_array(), zker)
         self.logicals = Z2Hom.from_array(zker[:, log_nrs])
-
-    def pullback_checks(self) -> TwoGroupHom:
-        return self.checks.phase_pullback(self.gates)
-
-    def pullback_logicals(self) -> TwoGroupHom:
-        return self.logicals.phase_pullback(self.gates)
 
     def find_gates(self) -> None:
         """
@@ -362,12 +377,12 @@ class GateFinder:
         # translog: group of all logical gates with transversal physical implementation
         # stabphys: group of physical transversal gates with trivial logical action
 
-        allphys_allcheck = self.pullback_checks() # map all physical -> all check
+        allphys_allcheck = self.checks.phase_pullback(self.gates) # map all physical -> all check
         self.transphys_allphys = allphys_allcheck.kernel() # map transversal physical -> all physical
         self.find_logical_action()
 
     def find_logical_action(self) -> None:
-        allphys_alllog = self.pullback_logicals() # map all physical -> all logical
+        allphys_alllog = self.logicals.phase_pullback(self.gates) # map all physical -> all logical
         self.alllog_locs = allphys_alllog.phase_locs0 # supports of the logical phase functions
         transphys_alllog = allphys_alllog @ self.transphys_allphys # map transversal physical -> all logical
         self.translog_alllog, self.transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
@@ -387,22 +402,23 @@ class GateFinder:
         """
         print(self.stabphys_allphys.to_string())
 
-    def find_phys_rep(self, logic_gate) -> lin.Elem:
+    def find_phys_rep(self, logic_gate) -> TwoGroupElem:
         """
         Can be called after find_gates().
         Find physical representative for transversal logical gate.
 
         Parameters:
             logic_gate: coefficient list, linear combination of generator transversal logicals
+
+        Returns:
+            TwoGroupElem over the group of physical ansatz gate configurations (phase_locs = self.gates)
         """
         logic_elem = lin.Elem(np.array(logic_gate), self.translog_alllog.dim1)
         transphys_rep = self.transphys_translog.solve_with_helper(logic_elem, self.rep_find_helper)
-        phys_rep = self.transphys_allphys @ transphys_rep
-        return phys_rep
+        return self.transphys_allphys @ transphys_rep
 
     def print_phys_rep(self, logic_gate) -> None:
-        rep = self.find_phys_rep(logic_gate)
-        print(self.gates.elem_to_string(rep))
+        print(self.find_phys_rep(logic_gate).to_string())
 
     def test_if_implemented(self, gates, coeffs) -> Optional[lin.Elem]:
         """
@@ -445,7 +461,7 @@ class GateFinder:
         except ValueError:
             return None
 
-    def find_phys_rep_free(self, gates, coeffs) -> Optional[lin.Elem]:
+    def find_phys_rep_free(self, gates, coeffs) -> Optional[TwoGroupElem]:
         """
         Can be called after find_gates().
         Find a physical representative for a logical gate given in free form (gate locations on the logical qubits plus coefficients, see test_if_implemented), or None if the gate has no transversal implementation.
@@ -460,7 +476,7 @@ class GateFinder:
         if rep is None:
             print("no transversal implementation")
         else:
-            print(self.gates.elem_to_string(rep))
+            print(rep.to_string())
 
     def test_commutation(self) -> None:
         """Test if z checks commute with x checks and x logicals."""
@@ -637,20 +653,6 @@ def quotient_image_by_image(K: lin.Hom, P: lin.Hom, K_solve_helper = None) -> li
                     f[i, l][:, j] = x[i] // 2**(i-l)
 
     return transpose_hom(transpose_hom(f).kernel())
-
-def matrix_from_list(nr_rows: int, index_list) -> np.ndarray:
-    """Generate matrix from a list of index sets - each list entry corresponds to one column, and the integers in the entry are the rows where the column is non-zero."""
-    check_list = []
-    for check_num in index_list:
-        check = np.zeros((nr_rows,), dtype=int)
-        check[list(check_num)] = 1
-        check_list.append(check)
-    if not check_list:
-        return np.zeros((nr_rows, 0), dtype=int)
-    return np.array(check_list).T
-
-def list_from_matrix(matrix: np.ndarray) -> list[set[int]]:
-    return [set((np.nonzero(matrix[:, i])[0]).tolist()) for i in range(matrix.shape[1])]
 
 def shift_loc_list(loc_list, shift: int) -> list[set[int]]:
     return [{bit+shift for bit in loc} for loc in loc_list]

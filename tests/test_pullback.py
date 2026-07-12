@@ -8,7 +8,11 @@ import numpy as np
 import twogroup_linalg as lin
 
 import transversal_gate_finder as tg
-from transversal_gate_finder.core import matrix_from_list
+
+
+def check_matrix(n, checks):
+    """Dense 0/1 check matrix (columns = checks, rows = qubits)."""
+    return tg.Z2Hom(n, checks).to_array()
 
 
 def finite_pullback(n, checks, gates):
@@ -56,7 +60,7 @@ def test_pullback_matches_direct_evaluation():
         c_elem = lin.Elem(np.concatenate(coeffs), pullback.dim1)
         image = pullback @ c_elem
 
-        A = matrix_from_list(n, checks)
+        A = check_matrix(n, checks)
         for alpha in product([0, 1], repeat=m):
             lhs = phase_function(gates, coeffs, (A @ np.array(alpha)) % 2)
             rhs = phase_function(check_gate_locs, [image[li] for li in range(len(image.dim))], alpha)
@@ -79,7 +83,7 @@ def test_kernel_matches_brute_force():
 
         pullback, _ = finite_pullback(n, checks, gates)
         K = pullback.kernel()
-        A = matrix_from_list(n, checks)
+        A = check_matrix(n, checks)
 
         def is_transversal(coeffs):
             return all(np.isclose(phase_function(gates, coeffs, (A @ np.array(alpha)) % 2), 0.0)
@@ -225,7 +229,7 @@ def test_ti_kernel_unfolds_to_finite_kernel():
 
         L = 4
         fin = code.as_finite_code(np.diag([L] * dim), auto_logicals=False)
-        fin_pullback = fin.pullback_checks()
+        fin_pullback = fin.checks.phase_pullback(fin.gates)
 
         # the unfolded transversal gates of the finite code lie in the finite kernel
         assert (fin_pullback @ fin.transphys_allphys).is_zero()
@@ -245,10 +249,10 @@ def test_ti_ccz_3d_toric():
     """The TI kernel of 3 copies of the 3D toric code with the 6 CCZ ansatz locations
     is exactly one Z2 generator: the known transversal CCZ (coefficient 1 everywhere)."""
     tc_3d = tg.TIGateFinder(3, 3)
-    tc_3d.add_checks([[((0,0,0), 0), ((0,0,0), 1), ((0,0,0), 2),
-                       ((-1,0,0), 0), ((0,-1,0), 1), ((0,0,-1), 2)]])
+    tc_3d.checks.add_columns([[((0,0,0), 0), ((0,0,0), 1), ((0,0,0), 2),
+                              ((-1,0,0), 0), ((0,-1,0), 1), ((0,0,-1), 2)]])
     tc_3d_x3 = tc_3d + tc_3d + tc_3d
-    tc_3d_x3.add_gates([[((0,0,0),0), ((1,0,0),4), ((1,1,0),8)],
+    tc_3d_x3.gates.add_locs([[((0,0,0),0), ((1,0,0),4), ((1,1,0),8)],
                         [((0,0,0),0), ((1,0,0),5), ((1,0,1),7)],
                         [((0,0,0),1), ((0,1,0),3), ((1,1,0),8)],
                         [((0,0,0),1), ((0,1,0),5), ((0,1,1),6)],
@@ -264,7 +268,7 @@ def test_ti_ccz_3d_toric():
 def test_steane_end_to_end():
     """S gates on all qubits of the Steane code give exactly one order-4 transversal logical (S dagger); T is not transversal."""
     steane = tg.GateFinder(7, checks=[[0,3,4,6], [1,4,5,6], [2,3,5,6]], logicals=[[0,2,3]])
-    steane.add_all_singlequbit_gates(1)
+    steane.gates.add_all_single_qubit_gates(1)
     steane.find_gates()
     assert steane.translog_alllog.dim1 == [0, 1]
     # logical S is transversally implemented, logical T is not
@@ -281,10 +285,10 @@ def test_find_gates_nonlocal_cc2d():
     from transversal_gate_finder.core import transpose_hom
 
     cc_2d = tg.TIGateFinder(2, 2)
-    cc_2d.add_checks([[((0,0),0), ((0,0),1), ((1,0),0), ((0,1),1), ((0,1),0), ((-1,1),1)]])
+    cc_2d.checks.add_columns([[((0,0),0), ((0,0),1), ((1,0),0), ((0,1),1), ((0,1),0), ((-1,1),1)]])
     cc_2d.other_checks = cc_2d.checks
-    cc_2d.add_all_single_qubit_gates(1)
-    cc_2d.add_gates_in_groups([[((0,0),0),((0,0),1),((-1,1),1),((-1,0),1)]], 0, 2)
+    cc_2d.gates.add_all_single_qubit_gates(1)
+    cc_2d.gates.add_gates_in_groups([[((0,0),0),((0,0),1),((-1,1),1),((-1,0),1)]], 0, 2)
     cc_2d.set_local_gates([[], [((0,0),0), ((0,0),1)]])
     cc_2d.find_gates_nonlocal()
 
@@ -307,8 +311,8 @@ def test_find_gates_nonlocal_cc2d():
 def test_ti_z2hom_transpose_and_composition():
     """X and Z checks of the 2D toric code commute: checks^T @ other_checks == 0."""
     tc_2d = tg.TIGateFinder(2, 2)
-    tc_2d.add_checks([[((0,0),0),((0,0),1),((1,0),1),((0,1),0)]])
-    tc_2d.add_other_checks([[((0,0),0),((0,0),1),((-1,0),0),((0,-1),1)]])
+    tc_2d.checks.add_columns([[((0,0),0),((0,0),1),((1,0),1),((0,1),0)]])
+    tc_2d.other_checks.add_columns([[((0,0),0),((0,0),1),((-1,0),0),((0,-1),1)]])
     assert (tc_2d.checks.transpose() @ tc_2d.other_checks).is_zero()
     # transpose is an involution
     assert tc_2d.checks.transpose().transpose().h == [sorted(col) for col in tc_2d.checks.h]

@@ -28,8 +28,8 @@ import numpy as np
 import twogroup_linalg as lin
 
 from . import flint_wrappers as fl
-from .core import (GateFinder, PhaseLocs, TwoGroupHom, _locs_match, assemble_pullback,
-                   pullback_column, quotient_image_by_image)
+from .core import (GateFinder, TwoGroupElem, TwoGroupHom, _check_phase_locs_dims,
+                   assemble_pullback, pullback_column, quotient_image_by_image)
 
 Coord = tuple[int, ...]
 TISpecifier = tuple[Coord, int]  # (coordinate tuple, internal generator number)
@@ -104,6 +104,29 @@ class TIPhaseLocs:
         for loc in _standardize_ti_locs(locs, self.dim, self.dimension):
             self.locs[l].append(normalize_ti_loc(loc)[1])
 
+    def add_all_single_qubit_gates(self, l: int) -> None:
+        """Add all singleton supports {((0,...,0), intern)} at level l (single-qubit ansatz gates of order 2^(l+1))."""
+        self.add_locs([{((0,) * self.dimension, intern)} for intern in range(self.dim)], l)
+
+    def add_gates_in_groups(self, groups, l: int, k: int) -> None:
+        """Add all k-subset supports at level l within each group in "groups".
+
+        Each group is a collection of (coord tuple, internal number) pairs; groups may
+        also be given as a TIZ2Hom (e.g. a TIGateFinder's checks). Supports are normalized.
+        """
+        if isinstance(groups, TIZ2Hom):
+            groups = groups.h
+        loc_set = set()
+        for group in _standardize_ti_locs(groups, self.dim, self.dimension):
+            loc_set.update(frozenset(normalize_ti_loc(comb)[1]) for comb in combinations(group, k))
+        self.add_locs(map(set, loc_set), l)
+
+    def add_gates_in_coord_group(self, group, l: int, k: int) -> None:
+        """Add all k-subset supports at level l among the qubits supported on the given set of coordinates."""
+        qubits = [(tuple(coord), intern) for coord in group for intern in range(self.dim)]
+        loc_set = set(frozenset(normalize_ti_loc(comb)[1]) for comb in combinations(qubits, k))
+        self.add_locs(map(set, loc_set), l)
+
     def consolidate(self) -> None:
         """Remove duplicate supports, keeping a support only at the highest level where it occurs."""
         current = set()
@@ -111,22 +134,6 @@ class TIPhaseLocs:
             llocs = set(map(frozenset, self.locs[l])) - current
             current |= llocs
             self.locs[l] = list(map(set, llocs))
-
-    def elem_to_string(self, elem: lin.Elem) -> str:
-        """Write an element of the 2-group of translation-invariant phase functions as a string."""
-        terms = []
-        for li in range(len(elem.dim)):
-            for i in range(elem.dim[li]):
-                if elem[li][i] != 0:
-                    terms.append(f"{elem[li][i]}/{2 ** (li + 1)}*{sorted(self.locs[li][i])}")
-        return ", ".join(terms)
-
-    def __eq__(self, other) -> bool:
-        if not isinstance(other, TIPhaseLocs):
-            return NotImplemented
-        return (self.dim == other.dim and self.dimension == other.dimension
-                and list(map(lambda ls: list(map(frozenset, ls)), self.locs))
-                == list(map(lambda ls: list(map(frozenset, ls)), other.locs)))
 
 
 class TIZ2Hom:
@@ -273,6 +280,15 @@ class TITwoGroupHom:
                  phase_locs1: Optional[TIPhaseLocs] = None):
         if len(ti_support) != len(h.dim0) or any(len(s) != d for s, d in zip(ti_support, h.dim0)):
             raise ValueError("ti_support must have one specifier per target generator of h")
+        if phase_locs1 is not None:
+            _check_phase_locs_dims(phase_locs1, h.dim1, "phase_locs1")
+        if phase_locs0 is not None:
+            # each target generator refers, via ti_support, to an internal generator of phase_locs0
+            pdims = phase_locs0.dims
+            for l, support in enumerate(ti_support):
+                for _, g in support:
+                    if not 0 <= g < (pdims[l] if l < len(pdims) else 0):
+                        raise ValueError(f"ti_support level {l} refers to internal generator {g} absent from phase_locs0")
         self.h = h
         self.ti_support = [list(s) for s in ti_support]
         self.phase_locs0 = phase_locs0
@@ -286,18 +302,26 @@ class TITwoGroupHom:
     def dim1(self) -> list[int]:
         return self.h.dim1
 
-    def __matmul__(self, other: "TITwoGroupHom") -> "TITwoGroupHom":
-        """Composition self @ other.
+    def __matmul__(self, other: Union["TITwoGroupHom", TwoGroupElem, "TITwoGroupElem", lin.Elem]):
+        """Composition with another TITwoGroupHom, or application to a (TI)(TwoGroup)Elem.
 
-        The target generators of other are translates (given by other.ti_support) of
-        the source generators of self; by translation covariance, self maps such a
-        translate to the correspondingly shifted column of self. Target generators of
-        the result landing on the same translate are merged.
+        The target generators of other are translates (given by other.ti_support, or by
+        the standard generators for a plain element) of the source generators of self; by
+        translation covariance, self maps such a translate to the correspondingly shifted
+        column of self. Result generators landing on the same translate are merged. As for
+        TwoGroupHom, composition/application requires the shared phase_locs to be the same
+        object (checked with "is"); a raw lin.Elem carries no phase_locs and is accepted.
         """
+        if isinstance(other, (lin.Elem, TwoGroupElem, TITwoGroupElem)):
+            e = other if isinstance(other, lin.Elem) else other.e
+            pl = None if isinstance(other, lin.Elem) else other.phase_locs
+            if pl is not None and pl is not self.phase_locs1:
+                raise ValueError("Application requires elem.phase_locs is self.phase_locs1")
+            return TITwoGroupElem(self.h @ e, self.ti_support, phase_locs=self.phase_locs0)
         if not isinstance(other, TITwoGroupHom):
             return NotImplemented
-        if not _locs_match(other.phase_locs0, self.phase_locs1):
-            raise ValueError("Composition requires other.phase_locs0 == self.phase_locs1")
+        if other.phase_locs0 is not self.phase_locs1:
+            raise ValueError("Composition requires other.phase_locs0 is self.phase_locs1")
         if len(other.h.dim0) > len(self.h.dim1):
             raise ValueError("Target of other exceeds the levels of the source of self")
 
@@ -388,6 +412,50 @@ class TITwoGroupHom:
         return out
 
 
+class TITwoGroupElem:
+    """Element of a 2-group generated by lattice translates of internal generators.
+
+    Attributes:
+        e: lin.Elem holding the coefficient vector
+        ti_support: ti_support[l][r] = (coord, internal number) identifying the r-th
+            generator of level l as a translate; len(ti_support[l]) == e.dim[l]
+        phase_locs: TIPhaseLocs describing the internal generator supports, or None
+    """
+
+    def __init__(self, e: lin.Elem, ti_support: Sequence[Sequence[TISpecifier]],
+                 phase_locs: Optional[TIPhaseLocs] = None):
+        if len(ti_support) != len(e.dim) or any(len(s) != d for s, d in zip(ti_support, e.dim)):
+            raise ValueError("ti_support must have one specifier per generator of e")
+        self.e = e
+        self.ti_support = [list(s) for s in ti_support]
+        self.phase_locs = phase_locs
+
+    @property
+    def dim(self) -> list[int]:
+        return self.e.dim
+
+    @property
+    def v(self) -> np.ndarray:
+        return self.e.v
+
+    def to_string(self) -> str:
+        """Write the element as a string; generators labeled by their (coord, internal number)
+        pair if phase_locs is None, else by their phase_locs support shifted by the coordinate."""
+        terms = []
+        for li in range(len(self.e.dim)):
+            for i in range(self.e.dim[li]):
+                c = self.e[li][i]
+                if c != 0:
+                    shift, g = self.ti_support[li][i]
+                    if self.phase_locs is None:
+                        label = (shift, g)
+                    else:
+                        label = sorted({(tuple(a + b for a, b in zip(coord, shift)), intern)
+                                        for coord, intern in self.phase_locs.locs[li][g]})
+                    terms.append(f"{c}/{2 ** (li + 1)}*{label}")
+        return ", ".join(terms)
+
+
 class TIGateFinder:
     """Helper class for analyzing translation-invariant codes in n dimensions.
 
@@ -413,67 +481,17 @@ class TIGateFinder:
     def __init__(self, nr_qubits: int, dimension: int, checks=None, gates=None, other_checks=None):
         self.nr_qubits = nr_qubits
         self.dimension = dimension
-        self.checks = TIZ2Hom(nr_qubits, dimension)
-        self.other_checks = TIZ2Hom(nr_qubits, dimension)
-        self.gates = TIPhaseLocs(nr_qubits, dimension)
-        if checks is not None:
-            self.add_checks(checks)
-        if other_checks is not None:
-            self.add_other_checks(other_checks)
-        if gates is not None:
-            for l in range(len(gates)):
-                self.add_gates(gates[l], l)
+        self.checks = TIZ2Hom(nr_qubits, dimension, checks)
+        self.other_checks = TIZ2Hom(nr_qubits, dimension, other_checks)
+        self.gates = TIPhaseLocs(nr_qubits, dimension, gates)
         self.local_gates: Optional[TITwoGroupHom] = None
         self.transphys_allphys: Optional[TwoGroupHom] = None
         self.transphys_nonlocal: Optional[TwoGroupHom] = None
-
-    def add_checks(self, checks) -> None:
-        self.checks.add_columns(checks)
-
-    def add_other_checks(self, other_checks) -> None:
-        self.other_checks.add_columns(other_checks)
-
-    def extend_gate_orders(self, l: int) -> None:
-        """Reserve space for gates of orders up to 2^(l+1)."""
-        self.gates.extend_levels(l)
-
-    def add_gates(self, gates, l: int) -> None:
-        self.gates.add_locs(gates, l)
 
     def standardize_locs(self, listlist) -> list[set[TISpecifier]]:
         """Validate a list of checks/gates and bring it into standard form:
         each check/gate a set of pairs (coordinate tuple, internal qubit number)."""
         return _standardize_ti_locs(listlist, self.nr_qubits, self.dimension)
-
-    def add_all_single_qubit_gates(self, l: int) -> None:
-        self.gates.add_locs([{((0,) * self.dimension, intern)} for intern in range(self.nr_qubits)], l)
-
-    def add_gates_in_groups(self, groups, l: int, k: int) -> None:
-        """Add all gate locations of size k and phase-level l within each group in "groups".
-
-        Each group in groups is a collection of pairs of coord tuple and internal qubit nr;
-        groups can also be given as a TIZ2Hom (e.g. self.checks).
-        """
-        if isinstance(groups, TIZ2Hom):
-            groups = groups.h
-        loc_set = set()
-        for group in self.standardize_locs(groups):
-            loc_set.update(frozenset(normalize_ti_loc(comb)[1]) for comb in combinations(group, k))
-        self.gates.add_locs(map(set, loc_set), l)
-
-    def add_gates_in_coord_group(self, group, l: int, k: int) -> None:
-        """Add all gate locations of size k and phase-level l within each subset of qubits supported on the set of coordinates.
-        """
-        qubits = [(tuple(coord), intern) for coord in group for intern in range(self.nr_qubits)]
-        loc_set = set(frozenset(normalize_ti_loc(comb)[1]) for comb in combinations(qubits, k))
-        self.gates.add_locs(map(set, loc_set), l)
-
-    def consolidate_gates(self) -> None:
-        """Deduplicate the ansatz gates: within each order keep only one copy of identical
-        gates, and keep a gate that appears at several orders only at the highest one.
-        (Gate locations are already stored normalized.)
-        """
-        self.gates.consolidate()
 
     def print_gates(self) -> None:
         for l, lgates in enumerate(self.gates.locs):
@@ -528,23 +546,23 @@ class TIGateFinder:
                     for loc in self.standardize_locs(loc_listlist)]
 
         tgf = GateFinder(total_dim * self.nr_qubits)
-        tgf.add_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.checks.h))
+        tgf.checks.add_columns(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.checks.h))
         for l, lgates in enumerate(self.gates.locs):
-            tgf.add_gates(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, lgates), l)
+            tgf.gates.add_locs(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, lgates), l)
         if manual_gates is not None:
             for l, lgates in enumerate(manual_gates):
-                tgf.add_gates(to_finite_qubits(lgates), l)
-        tgf.add_other_checks(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks.h))
+                tgf.gates.add_locs(to_finite_qubits(lgates), l)
+        tgf.other_checks.add_columns(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks.h))
 
         # logicals derived from the Z checks (if requested); must come first since it overwrites tgf.logicals
         if auto_logicals:
             tgf.logicals_from_other_checks()
         # translation-invariant logicals: one copy for every unit cell (like the checks)
         if ti_logicals is not None:
-            tgf.add_logicals(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.standardize_locs(ti_logicals)))
+            tgf.logicals.add_columns(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.standardize_locs(ti_logicals)))
         # manual logicals: finite-code specifiers, not repeated per unit cell
         if manual_logicals is not None:
-            tgf.add_logicals(to_finite_qubits(manual_logicals))
+            tgf.logicals.add_columns(to_finite_qubits(manual_logicals))
 
         if self.transphys_allphys is not None:
             # unfold the translation-invariant transversal gates: repeat the TI gate once for every unit cell.
@@ -639,7 +657,7 @@ class TIGateFinder:
         self.transphys_nonlocal = TwoGroupHom(quotient)
         _, self.rep_find_helper = self.transphys_nonlocal.kernel(return_solve_helper = True)
 
-    def find_phys_rep(self, nonlocal_gate) -> lin.Elem:
+    def find_phys_rep(self, nonlocal_gate) -> TwoGroupElem:
         """
         Can be called after find_gates_nonlocal().
         Find a translation-invariant transversal gate configuration representing a given class of the quotient by local transversal gates.
@@ -648,7 +666,7 @@ class TIGateFinder:
             nonlocal_gate: coefficient list for an Elem over the quotient 2-group (self.transphys_nonlocal.dim0)
 
         Returns:
-            Elem over the group of TI ansatz gate configurations (like the columns of self.transphys_allphys)
+            TwoGroupElem over the group of TI ansatz gate configurations (phase_locs = self.gates)
         """
         nonlocal_elem = lin.Elem(np.array(nonlocal_gate), self.transphys_nonlocal.dim0)
         trans_rep = self.transphys_nonlocal.solve_with_helper(nonlocal_elem, self.rep_find_helper)
@@ -688,6 +706,6 @@ def shift_ti_loc_list(loc_list, shift: int) -> list[set[TISpecifier]]:
 def twobga_code(dimension: int, poly1, poly2) -> TIGateFinder:
     """Creates an "infinite" abelian 2-block group-algebra code from two polynomials. After compactification with as_finite_code() this is a true 2-block group-algebra code."""
     code = TIGateFinder(2, dimension)
-    code.add_checks([[(tuple(coord), 0) for coord in poly1] + [(tuple(coord), 1) for coord in poly2]])
-    code.add_other_checks([[(tuple(-c for c in coord), 1) for coord in poly1] + [(tuple(-c for c in coord), 0) for coord in poly2]])
+    code.checks.add_columns([[(tuple(coord), 0) for coord in poly1] + [(tuple(coord), 1) for coord in poly2]])
+    code.other_checks.add_columns([[(tuple(-c for c in coord), 1) for coord in poly1] + [(tuple(-c for c in coord), 0) for coord in poly2]])
     return code
