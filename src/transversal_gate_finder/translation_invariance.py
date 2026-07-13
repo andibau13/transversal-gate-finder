@@ -619,10 +619,6 @@ class TIGateFinder:
         other_checks: Z checks (optional) as a TIZ2Hom
         gates: Ansatz gates as a TIPhaseLocs object; each generator is one gate applied
             at all lattice translates of its location
-        local_gates: Locally supported (non-translation-invariant) gate configurations,
-            used by find_gates_nonlocal. A TITwoGroupHom from an abstract finite 2-group
-            to the group of translates of the ansatz gates (phase_locs0 = self.gates);
-            set it via set_local_gates. None before set_local_gates is called.
 
     find_gates_nonlocal() and find_gates_compactify() each return a GateFinderResults
     (see that class). Its transphys_allphys is always the TI map from the
@@ -636,7 +632,6 @@ class TIGateFinder:
         self.checks = TIZ2Hom(nr_qubits, dimension, checks)
         self.other_checks = TIZ2Hom(nr_qubits, dimension, other_checks)
         self.gates = TIPhaseLocs(nr_qubits, dimension, gates)
-        self.local_gates: Optional[TITwoGroupHom] = None
 
     def standardize_locs(self, listlist) -> list[set[TISpecifier]]:
         """Validate a list of checks/gates and bring it into standard form:
@@ -648,21 +643,6 @@ class TIGateFinder:
             print(f"\nLevel {l}")
             for gate in lgates:
                 print(set(gate))
-
-    def set_local_gates(self, active_gates: Sequence[Sequence[TISpecifier]]) -> None:
-        """Set self.local_gates from a list of active gate locations.
-
-        Parameters:
-            active_gates: active_gates[l] is a list of pairs of a shift coordinate
-                (int tuple) and an internal gate number indexing self.gates.locs[l].
-                Each entry is one independent local degree of freedom: the ansatz gate
-                self.gates.locs[l][i], applied at the prescribed translate only.
-
-        Sets self.local_gates to the corresponding canonical inclusion: a TITwoGroupHom
-        from the free 2-group over the active locations to the group of translates of
-        the ansatz gates (see TIPhaseLocs.identity_on_support).
-        """
-        self.local_gates = TIPhaseLocs.identity_on_support(active_gates, self.gates)
 
     def compactify(self, lattice, auto_logicals: bool = True, ti_logicals=None,
                        manual_logicals=None, manual_gates=None) -> GateFinder:
@@ -713,16 +693,28 @@ class TIGateFinder:
         _, transphys_solve_helper = transphys_allphys.kernel(return_solve_helper = True)
         return transphys_allphys, transphys_solve_helper
 
-    def find_gates_nonlocal(self) -> GateFinderResults:
+    def find_gates_nonlocal(self, local_gates, local_mode: str = "hypercube") -> GateFinderResults:
         """Compute the translation-invariant transversal gates modulo sums of translates of local transversal gates.
 
         First calls _find_transversal() to get the group T of translation-invariant transversal
-        gates. Then computes the group of locally supported transversal gates on the
-        active locations self.local_gates (see set_local_gates) as the kernel of the
-        pullback composed with the local gate inclusion. Summing such a local gate
-        configuration over all lattice translates yields a translation-invariant
+        gates. Then computes the group of locally supported transversal gates on the given local
+        gates as the kernel of the pullback composed with the local gate inclusion. Summing such a
+        local gate configuration over all lattice translates yields a translation-invariant
         configuration (the shift of each active gate is forgotten, which is
-        self.local_gates.ti_sum()); these are quotiented out of T.
+        local_gates.ti_sum()); these are quotiented out of T.
+
+        Parameters:
+            local_gates: the locally supported (non-translation-invariant) gate configurations,
+                as a TITwoGroupHom from an abstract finite 2-group to the group of translates of
+                the ansatz gates (phase_locs0 = self.gates). How local_gates is interpreted is
+                controlled by local_mode.
+            local_mode: how to build the local gate inclusion from local_gates:
+                "full": local_gates is already a TITwoGroupHom and is used as is.
+                "support": local_gates is a support (see TIPhaseLocs.identity_on_support),
+                    turned into the inclusion via identity_on_support(local_gates, self.gates).
+                "hypercube" (default): local_gates is a list of hypercube side lengths (see
+                    TITwoGroupHom.identity_on_hypercube), turned into the inclusion via
+                    identity_on_hypercube(local_gates, self.gates).
 
         Returns a GateFinderResults with transphys_translog set: a surjective TwoGroupHom from
         T to the quotient 2-group N. Elements of N are classes of TI transversal gates that
@@ -731,13 +723,17 @@ class TIGateFinder:
         find_nontrivial_physical can return physical representatives, and keeps transphys_allphys (the TI
         map T -> G).
         """
+        if local_mode == "support":
+            local_gates = TIPhaseLocs.identity_on_support(local_gates, self.gates)
+        elif local_mode == "hypercube":
+            local_gates = TITwoGroupHom.identity_on_hypercube(local_gates, self.gates)
+        elif local_mode != "full":
+            raise ValueError(f"Unknown local_mode {local_mode!r}; expected 'full', 'support' or 'hypercube'")
         transphys_allphys, transphys_solve_helper = self._find_transversal()
-        if self.local_gates is None:
-            raise ValueError("Call set_local_gates before find_gates_nonlocal")
-        local_pullback = self.checks.phase_pullback(self.gates) @ self.local_gates
+        local_pullback = self.checks.phase_pullback(self.gates) @ local_gates
         local_transversal = local_pullback.kernel()
         # sum over all translates: each active local gate (shift, gate_nr) contributes to the TI gate gate_nr
-        translate_sum = self.local_gates.ti_sum()
+        translate_sum = local_gates.ti_sum()
         quotient = transphys_allphys.h.quotient_image_by_image(
             (translate_sum @ local_transversal).h, transphys_solve_helper)
         transphys_translog = TwoGroupHom(quotient)

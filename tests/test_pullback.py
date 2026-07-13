@@ -185,9 +185,9 @@ def test_local_pullback_matches_direct_evaluation():
         gdims = code.gates.dims
         active_gates = [[(tuple(int(x) for x in rng.integers(-2, 3, size=dim)), int(rng.integers(0, gdims[l])))
                          for _ in range(int(rng.integers(1, 4)))] if gdims[l] else [] for l in range(3)]
-        code.set_local_gates(active_gates)
+        local_gates = tg.TIPhaseLocs.identity_on_support(active_gates, code.gates)
 
-        local_pb = code.checks.phase_pullback(code.gates) @ code.local_gates
+        local_pb = code.checks.phase_pullback(code.gates) @ local_gates
         # absolute check gate locations of the target generators
         abs_locs = [[{(tuple(c + s for c, s in zip(coord, shift)), j)
                       for coord, j in local_pb.phase_locs0.locs[li][g]}
@@ -298,17 +298,17 @@ def test_find_gates_nonlocal_cc2d():
     cc_2d.other_checks = cc_2d.checks
     cc_2d.gates.add_all_single_locs(1)
     cc_2d.gates.add_locs_in_groups([[((0,0),0),((0,0),1),((-1,1),1),((-1,0),1)]], 0, 2)
-    cc_2d.set_local_gates([[], [((0,0),0), ((0,0),1)]])
-    results = cc_2d.find_gates_nonlocal()
+    local_gates = tg.TIPhaseLocs.identity_on_support([[], [((0,0),0), ((0,0),1)]], cc_2d.gates)
+    results = cc_2d.find_gates_nonlocal(local_gates, local_mode="full")
 
     q = results.transphys_translog
     # surjective: the dual is injective
     assert sum(q.h.transpose().kernel().dim1) == 0
 
     # q kills the translate-sum of every local transversal gate
-    local_pb = cc_2d.checks.phase_pullback(cc_2d.gates) @ cc_2d.local_gates
+    local_pb = cc_2d.checks.phase_pullback(cc_2d.gates) @ local_gates
     local_transversal = local_pb.kernel()
-    P = cc_2d.local_gates.ti_sum() @ local_transversal
+    P = local_gates.ti_sum() @ local_transversal
     for l in range(len(P.dim1)):
         for j in range(P.dim1[l]):
             gen = lin.Elem.zeros(P.dim1)
