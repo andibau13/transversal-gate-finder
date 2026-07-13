@@ -380,42 +380,20 @@ class GateFinderResults:
         self.transphys_translog = transphys_translog
         self.translog_alllog = translog_alllog
         self.stabphys_allphys = stabphys_allphys
-        self.log_find_helper = log_find_helper
-        self.rep_find_helper = rep_find_helper
-        self.transphys_solve_helper = transphys_solve_helper
+        self._log_find_helper = log_find_helper
+        self._rep_find_helper = rep_find_helper
+        self._transphys_solve_helper = transphys_solve_helper
 
-    def print_transversal_logicals(self) -> None:
-        """Print the transversal logical gates (needs translog_alllog; not set by find_gates_nonlocal)."""
-        print(self.translog_alllog.to_string())
-
-    def print_physical_stabilizers(self) -> None:
-        """Print the physical transversal stabilizers (needs stabphys_allphys; not set by find_gates_nonlocal)."""
-        print(self.stabphys_allphys.to_string())
 
     def print_nontrivial_dimension(self) -> None:
         """Print the dimension (number of generators per level) of the non-trivial transversal gates."""
         print(self.transphys_translog.dim0)
 
-    def find_phys_rep(self, nontrivial_gate) -> "TwoGroupElem":
-        """
-        Find a physical representative for a non-trivial transversal gate.
+    def print_nontrivial_logicals(self) -> None:
+        """Print the transversal logical gates (needs translog_alllog; not set by find_gates_nonlocal)."""
+        print(self.translog_alllog.to_string())
 
-        Parameters:
-            nontrivial_gate: coefficient list for an Elem over the group of non-trivial
-                transversal gates (self.transphys_translog.dim0)
-
-        Returns:
-            TwoGroupElem over the group of physical ansatz gate configurations
-            (phase_locs = self.transphys_allphys.phase_locs0)
-        """
-        elem = lin.Elem(np.array(nontrivial_gate), self.transphys_translog.dim0)
-        transphys_rep = self.transphys_translog.solve_with_helper(elem, self.rep_find_helper)
-        return self.transphys_allphys @ transphys_rep
-
-    def print_phys_rep(self, nontrivial_gate) -> None:
-        print(self.find_phys_rep(nontrivial_gate).to_string())
-
-    def print_nontrivial_generator_reps(self) -> None:
+    def print_nontrivial_physicals(self) -> None:
         """Print one physical representative for each generating non-trivial transversal gate.
 
         For every generator of the non-trivial 2-group (self.transphys_translog.dim0) a physical
@@ -434,9 +412,34 @@ class GateFinderResults:
             for i in range(d):
                 gen = lin.Elem.zeros(dims)
                 gen[l][i] = 1
-                print(self.find_phys_rep(gen.v).to_string())
+                print(self.find_nontrivial_physical(gen.v).to_string())
 
-    def test_if_implemented(self, gates) -> Optional[lin.Elem]:
+    def print_trivial_physicals(self) -> None:
+        """Print the physical transversal stabilizers (needs stabphys_allphys; not set by find_gates_nonlocal)."""
+        print(self.stabphys_allphys.to_string())
+
+    def find_nontrivial_physical(self, nontrivial_gate) -> "TwoGroupElem":
+        """
+        Find a physical representative for a non-trivial transversal gate.
+
+        Parameters:
+            nontrivial_gate: coefficient list for an Elem over the group of non-trivial
+                transversal gates (self.transphys_translog.dim0)
+
+        Returns:
+            TwoGroupElem over the group of physical ansatz gate configurations
+            (phase_locs = self.transphys_allphys.phase_locs0)
+        """
+        elem = lin.Elem(np.array(nontrivial_gate), self.transphys_translog.dim0)
+        transphys_rep = self.transphys_translog.solve_with_helper(elem, self._rep_find_helper)
+        return self.transphys_allphys @ transphys_rep
+
+    def print_nontrivial_physical(self, nontrivial_gate) -> None:
+        print(self.find_nontrivial_physical(nontrivial_gate).to_string())
+
+
+
+    def find_nontrivial_from_logical(self, gates) -> Optional[lin.Elem]:
         """
         Test whether a given diagonal logical gate has a transversal implementation
         (needs translog_alllog / log_find_helper; not set by find_gates_nonlocal).
@@ -472,23 +475,23 @@ class GateFinderResults:
             target[lev][i] = (int(target[lev][i]) + val) % 2**(lev+1)
 
         try:
-            return self.translog_alllog.solve_with_helper(target, self.log_find_helper)
+            return self.translog_alllog.solve_with_helper(target, self._log_find_helper)
         except ValueError:
             return None
 
-    def find_phys_rep_free(self, gates) -> Optional["TwoGroupElem"]:
+    def find_physical_from_logical(self, gates) -> Optional["TwoGroupElem"]:
         """
         Find a physical representative for a logical gate given in free form (a list of
         (logical qubit set, gate level, coefficient) triples, see test_if_implemented), or None
         if the gate has no transversal implementation.
         """
-        translog = self.test_if_implemented(gates)
+        translog = self.find_nontrivial_from_logical(gates)
         if translog is None:
             return None
-        return self.find_phys_rep(translog.v)
+        return self.find_nontrivial_physical(translog.v)
 
-    def print_phys_rep_free(self, gates) -> None:
-        rep = self.find_phys_rep_free(gates)
+    def print_physical_from_logical(self, gates) -> None:
+        rep = self.find_physical_from_logical(gates)
         if rep is None:
             print("no transversal implementation")
         else:

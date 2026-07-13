@@ -547,7 +547,7 @@ def compactify_ti_specifier(compactification_data, specifier: TISpecifier) -> in
 
 
 def nr_to_coord(nr, compactification_data) -> np.ndarray:
-    """Convert a cell index (0 <= nr < total_dim) into its unit-cell coordinate vector."""
+    """Convert a cell index (0 <= nr < total_dim) into its unit-cell coordinate vector. This is just for conveniently iterating over all coordinates without tools like itertools.product"""
     _, cum_dims, _, periods = compactification_data
     return np.array(nr)[None] // cum_dims % periods
 
@@ -627,7 +627,7 @@ class TIGateFinder:
         h = lin.Hom.identity([len(s) for s in support])
         self.local_gates = TITwoGroupHom(h, support, phase_locs0=self.gates)
 
-    def as_finite_code(self, lattice, auto_logicals: bool = True, ti_logicals=None,
+    def compactify(self, lattice, auto_logicals: bool = True, ti_logicals=None,
                        manual_logicals=None, manual_gates=None) -> GateFinder:
         """Transform into a regular code by putting it on a finite lattice with twisted boundary conditions.
 
@@ -731,7 +731,7 @@ class TIGateFinder:
         """
         transphys_allphys, _ = self._find_transversal()
         compactification_data = extract_compactification_data(lattice)
-        tgf = self.as_finite_code(lattice, auto_logicals=auto_logicals, manual_logicals=manual_logicals)
+        tgf = self.compactify(lattice, auto_logicals=auto_logicals, manual_logicals=manual_logicals)
         # recompactify the gates to obtain the induced hom whose target *is* tgf.gates, then transport
         # the TI transversal gates onto the finite code and analyse their logical action there.
         tgf.gates, gates_compactify = self.gates.compactify(compactification_data)
@@ -743,8 +743,8 @@ class TIGateFinder:
             transphys_allphys=transphys_allphys,
             transphys_translog=finite_results.transphys_translog,
             translog_alllog=finite_results.translog_alllog,
-            log_find_helper=finite_results.log_find_helper,
-            rep_find_helper=finite_results.rep_find_helper,
+            log_find_helper=finite_results._log_find_helper,
+            rep_find_helper=finite_results._rep_find_helper,
             stabphys_allphys=transphys_allphys @ stabphys_transphys,
         )
 

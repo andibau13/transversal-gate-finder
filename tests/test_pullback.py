@@ -235,7 +235,7 @@ def test_ti_kernel_unfolds_to_finite_kernel():
 
         L = 4
         cd = extract_compactification_data(np.diag([L] * dim))
-        fin = code.as_finite_code(np.diag([L] * dim), auto_logicals=False)
+        fin = code.compactify(np.diag([L] * dim), auto_logicals=False)
         fin.gates, gates_compactify = code.gates.compactify(cd)
         transphys = gates_compactify @ K
         fin_pullback = fin.checks.phase_pullback(fin.gates)
@@ -279,15 +279,15 @@ def test_steane_end_to_end():
     results = steane.find_gates()
     assert results.translog_alllog.dim1 == [0, 1]
     # logical S is transversally implemented, logical T is not
-    rep = results.find_phys_rep_free([({0}, 1, 1)])
+    rep = results.find_physical_from_logical([({0}, 1, 1)])
     assert rep is not None
-    assert results.test_if_implemented([({0}, 2, 1)]) is None
+    assert results.find_nontrivial_from_logical([({0}, 2, 1)]) is None
     # physical S-type stabilizers: one order-2 generator per X check
     assert results.stabphys_allphys.dim1 == [3, 0]
     # the reporting helpers run without error and see the single order-4 non-trivial gate
     assert results.transphys_translog.dim0 == [0, 1]
     results.print_nontrivial_dimension()
-    results.print_nontrivial_generator_reps()
+    results.print_nontrivial_physicals()
 
 
 def test_find_gates_nonlocal_cc2d():
@@ -313,7 +313,7 @@ def test_find_gates_nonlocal_cc2d():
         for j in range(P.dim1[l]):
             gen = lin.Elem.zeros(P.dim1)
             gen[l][j] = 1
-            x = results.transphys_allphys.h.solve_with_helper(P @ gen, results.transphys_solve_helper)
+            x = results.transphys_allphys.h.solve_with_helper(P @ gen, results._transphys_solve_helper)
             assert (q.h @ x).is_zero()
 
 
@@ -326,7 +326,7 @@ def test_z2_column_reduction_on_small_torus():
     # a 1D check spanning coords 0 and 2, compactified onto a period-2 torus: both coincide -> empty
     code = tg.TIGateFinder(1, 1)
     code.checks.add_columns([[((0,), 0), ((2,), 0)]])
-    fin = code.as_finite_code([[2]], auto_logicals=False,
+    fin = code.compactify([[2]], auto_logicals=False,
                               manual_logicals=[[((0,), 0), ((2,), 0)]],
                               manual_gates=[[], [{((0,), 0), ((2,), 0)}]])
     assert fin.checks.h == [[], []]          # X checks cancel
