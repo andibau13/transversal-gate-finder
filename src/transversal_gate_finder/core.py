@@ -339,20 +339,48 @@ class TwoGroupElem:
         return ", ".join(terms)
 
 
-class TransversalGateQueries:
-    """Mixin: query physical representatives of non-trivial transversal gates.
+class GateFinderResults:
+    """Results of a transversal-gate computation, with methods to query physical representatives.
 
-    Mixed into GateFinder and TIGateFinder. All methods rely on the attributes computed by
-    GateFinder.find_logical_action (translog_alllog, transphys_translog, log_find_helper,
-    rep_find_helper, stabphys_allphys) together with transphys_allphys. On a TIGateFinder these
-    are populated by find_gates_compactify (find_gates_nonlocal only sets transphys_translog,
-    rep_find_helper and transphys_allphys, so on it only find_phys_rep / print_phys_rep apply).
+    Returned by GateFinder.find_gates and by TIGateFinder.find_gates / find_gates_nonlocal /
+    find_gates_compactify. Which attributes are populated depends on the producing method (see
+    "Method availability" below); a query method works only when the attributes it relies on
+    are set.
+
+    Attributes (each None when not produced):
+        transphys_allphys: TwoGroupHom, transversal physical gates -> all physical gates
+        transphys_translog: surjective TwoGroupHom, transversal (physical) gates -> non-trivial
+            transversal gates (the 2-group over which find_phys_rep takes its argument)
+        translog_alllog: TwoGroupHom, transversal logical gates -> all logical gates
+        stabphys_allphys: TwoGroupHom, transversal stabilizers -> all physical gates
+        log_find_helper: solve helper used by test_if_implemented
+        rep_find_helper: solve helper used by find_phys_rep
+        transphys_solve_helper: kernel solve helper for transphys_allphys (translation-invariant
+            codes only; used internally by find_gates_nonlocal)
 
     Throughout, "non-trivial transversal gate" means an element of the 2-group
-    self.transphys_translog.dim0: the transversal logical gates for a GateFinder or a
-    TIGateFinder after find_gates_compactify, or the classes modulo local transversal gates
-    for a TIGateFinder after find_gates_nonlocal.
+    transphys_translog.dim0: the transversal logical gates (GateFinder.find_gates or
+    TIGateFinder.find_gates_compactify) or the classes modulo local transversal gates
+    (TIGateFinder.find_gates_nonlocal).
+
+    Method availability:
+        - GateFinder.find_gates / TIGateFinder.find_gates_compactify: all methods apply.
+        - TIGateFinder.find_gates_nonlocal: only find_phys_rep / print_phys_rep (it sets
+          transphys_allphys, transphys_translog, rep_find_helper).
+        - TIGateFinder.find_gates: only transphys_allphys is set (a prerequisite result feeding
+          find_gates_nonlocal / find_gates_compactify); no query method applies.
     """
+
+    def __init__(self, transphys_allphys=None, transphys_translog=None, translog_alllog=None,
+                 stabphys_allphys=None, log_find_helper=None, rep_find_helper=None,
+                 transphys_solve_helper=None):
+        self.transphys_allphys = transphys_allphys
+        self.transphys_translog = transphys_translog
+        self.translog_alllog = translog_alllog
+        self.stabphys_allphys = stabphys_allphys
+        self.log_find_helper = log_find_helper
+        self.rep_find_helper = rep_find_helper
+        self.transphys_solve_helper = transphys_solve_helper
 
     def print_transversal_logicals(self) -> None:
         """Print the transversal logical gates (needs translog_alllog; not set by find_gates_nonlocal)."""
@@ -440,7 +468,7 @@ class TransversalGateQueries:
             print(rep.to_string())
 
 
-class GateFinder(TransversalGateQueries):
+class GateFinder:
     """
     Helper class for finding diagonal transversal gates on a given CSS code.
 
@@ -455,13 +483,8 @@ class GateFinder(TransversalGateQueries):
             each gate is the set of participating qubits. Add gates via gates.add_locs,
             gates.add_all_single_locs, gates.add_locs_in_groups, etc.
 
-    find_gates() additionally sets (see its docstring for details):
-        transphys_allphys: all transversal physical gates -> all physical gates
-        translog_alllog: all transversal logical gates -> all logical gates
-        transphys_translog: transversal physical gates -> transversal logical gates
-        stabphys_allphys: all transversal stabilizers -> all physical gates
-        log_find_helper, rep_find_helper: solve helpers used by test_if_implemented
-            and find_phys_rep
+    find_gates() returns a GateFinderResults holding the computed maps and the query methods
+    (find_phys_rep, test_if_implemented, ...); see its docstring and GateFinderResults.
     """
 
     def __init__(self, nr_qubits: int, checks=None, gates=None, logicals=None, other_checks=None):
@@ -479,11 +502,11 @@ class GateFinder(TransversalGateQueries):
         ind_xchecks, log_nrs = lin.remove_image(self.checks.to_array(), zker)
         self.logicals = Z2Hom.from_array(zker[:, log_nrs])
 
-    def find_gates(self) -> None:
+    def find_gates(self) -> "GateFinderResults":
         """
         Compute the space of all transversal logical gates and the physical stabilizers.
 
-        Sets the following attibutes of self:
+        Returns a GateFinderResults with the following maps set (see GateFinderResults):
             transphys_allphys: All transversal physical gates: 2-group homomorphism from the group of all code-space preserving physical gates to the group of all physical gates formed by the ansatz gates
             translog_alllog: All transversal logical gates: 2-group homomorphism from the group of logicals with a transversal implementation to the group of all logicals
             rep_find_helper: allows the method find_phys_rep to quickly find a physical representative for a given transversal logical
@@ -499,16 +522,25 @@ class GateFinder(TransversalGateQueries):
         """
 
         allphys_allcheck = self.checks.phase_pullback(self.gates) # map all physical -> all check
-        self.transphys_allphys = allphys_allcheck.kernel() # map transversal physical -> all physical
-        self.find_logical_action()
+        transphys_allphys = allphys_allcheck.kernel() # map transversal physical -> all physical
+        return self.find_logical_action(transphys_allphys)
 
-    def find_logical_action(self) -> None:
+    def find_logical_action(self, transphys_allphys: TwoGroupHom) -> "GateFinderResults":
+        """Analyse the logical action of the given transphys_allphys map, returning a GateFinderResults."""
         allphys_alllog = self.logicals.phase_pullback(self.gates) # map all physical -> all logical
-        transphys_alllog = allphys_alllog @ self.transphys_allphys # map transversal physical -> all logical
-        self.translog_alllog, self.transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
-        _, self.log_find_helper = self.translog_alllog.kernel(return_solve_helper = True) # allows test_if_implemented to solve for a preimage in the transversal logicals
-        stabphys_transphys, self.rep_find_helper = self.transphys_translog.kernel(return_solve_helper = True) # stabilizer physical -> transversal physical
-        self.stabphys_allphys = self.transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
+        transphys_alllog = allphys_alllog @ transphys_allphys # map transversal physical -> all logical
+        translog_alllog, transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
+        _, log_find_helper = translog_alllog.kernel(return_solve_helper = True) # allows test_if_implemented to solve for a preimage in the transversal logicals
+        stabphys_transphys, rep_find_helper = transphys_translog.kernel(return_solve_helper = True) # stabilizer physical -> transversal physical
+        stabphys_allphys = transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
+        return GateFinderResults(
+            transphys_allphys=transphys_allphys,
+            transphys_translog=transphys_translog,
+            translog_alllog=translog_alllog,
+            stabphys_allphys=stabphys_allphys,
+            log_find_helper=log_find_helper,
+            rep_find_helper=rep_find_helper,
+        )
 
     def test_commutation(self) -> None:
         """Test if z checks commute with x checks and x logicals."""

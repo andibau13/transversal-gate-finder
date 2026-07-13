@@ -229,16 +229,15 @@ def test_ti_kernel_unfolds_to_finite_kernel():
         dim, nq, checks, gates = rand_ti_code_and_gates(rng)
         code = tg.TIGateFinder(nq, dim, checks=[list(c) for c in checks],
                                gates=[[set(g) for g in lg] for lg in gates])
-        code.find_gates()
-        K = code.transphys_allphys
+        K, _ = code._find_transversal()
         ti_pb = code.checks.phase_pullback(code.gates).ti_sum()
-        assert (ti_pb @ code.transphys_allphys).is_zero()
+        assert (ti_pb @ K).is_zero()
 
         L = 4
         cd = extract_compactification_data(np.diag([L] * dim))
         fin = code.as_finite_code(np.diag([L] * dim), auto_logicals=False)
         fin.gates, gates_compactify = code.gates.compactify(cd)
-        transphys = gates_compactify @ code.transphys_allphys
+        transphys = gates_compactify @ K
         fin_pullback = fin.checks.phase_pullback(fin.gates)
 
         # the transported transversal gates lie in the finite kernel, and no transversal
@@ -268,8 +267,7 @@ def test_ti_ccz_3d_toric():
                         [((0,0,0),2), ((0,0,1),3), ((1,0,1),7)],
                         [((0,0,0),2), ((0,0,1),4), ((0,1,1),6)]], 0)
 
-    tc_3d_x3.find_gates()
-    K = tc_3d_x3.transphys_allphys
+    K, _ = tc_3d_x3._find_transversal()
     assert K.dim1[0] == 1 and all(d == 0 for d in K.dim1[1:])
     assert np.all(K.h.M == 1)
 
@@ -278,14 +276,14 @@ def test_steane_end_to_end():
     """S gates on all qubits of the Steane code give exactly one order-4 transversal logical (S dagger); T is not transversal."""
     steane = tg.GateFinder(7, checks=[[0,3,4,6], [1,4,5,6], [2,3,5,6]], logicals=[[0,2,3]])
     steane.gates.add_all_single_locs(1)
-    steane.find_gates()
-    assert steane.translog_alllog.dim1 == [0, 1]
+    results = steane.find_gates()
+    assert results.translog_alllog.dim1 == [0, 1]
     # logical S is transversally implemented, logical T is not
-    rep = steane.find_phys_rep_free({(frozenset({0}), 1): 1})
+    rep = results.find_phys_rep_free({(frozenset({0}), 1): 1})
     assert rep is not None
-    assert steane.test_if_implemented({(frozenset({0}), 2): 1}) is None
+    assert results.test_if_implemented({(frozenset({0}), 2): 1}) is None
     # physical S-type stabilizers: one order-2 generator per X check
-    assert steane.stabphys_allphys.dim1 == [3, 0]
+    assert results.stabphys_allphys.dim1 == [3, 0]
 
 
 def test_find_gates_nonlocal_cc2d():
@@ -297,9 +295,9 @@ def test_find_gates_nonlocal_cc2d():
     cc_2d.gates.add_all_single_qubit_gates(1)
     cc_2d.gates.add_gates_in_groups([[((0,0),0),((0,0),1),((-1,1),1),((-1,0),1)]], 0, 2)
     cc_2d.set_local_gates([[], [((0,0),0), ((0,0),1)]])
-    cc_2d.find_gates_nonlocal()
+    results = cc_2d.find_gates_nonlocal()
 
-    q = cc_2d.transphys_translog
+    q = results.transphys_translog
     # surjective: the dual is injective
     assert sum(q.h.transpose().kernel().dim1) == 0
 
@@ -311,7 +309,7 @@ def test_find_gates_nonlocal_cc2d():
         for j in range(P.dim1[l]):
             gen = lin.Elem.zeros(P.dim1)
             gen[l][j] = 1
-            x = cc_2d.transphys_allphys.h.solve_with_helper(P @ gen, cc_2d.transphys_solve_helper)
+            x = results.transphys_allphys.h.solve_with_helper(P @ gen, results.transphys_solve_helper)
             assert (q.h @ x).is_zero()
 
 
