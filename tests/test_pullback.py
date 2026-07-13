@@ -221,32 +221,37 @@ def test_local_pullback_matches_direct_evaluation():
 
 
 def test_ti_kernel_unfolds_to_finite_kernel():
-    """Unfolding a TI transversal gate onto a compactified code must give a transversal gate."""
+    """Transporting a TI transversal gate onto a compactified code (via TIPhaseLocs.compactify's
+    induced homomorphism) must give a transversal gate."""
+    from transversal_gate_finder.translation_invariance import extract_compactification_data
     rng = np.random.default_rng(11)
     for trial in range(5):
         dim, nq, checks, gates = rand_ti_code_and_gates(rng)
         code = tg.TIGateFinder(nq, dim, checks=[list(c) for c in checks],
                                gates=[[set(g) for g in lg] for lg in gates])
         code.find_gates()
-        K = code.transphys_allphys.h
+        K = code.transphys_allphys
         ti_pb = code.checks.phase_pullback(code.gates).ti_sum()
         assert (ti_pb @ code.transphys_allphys).is_zero()
 
         L = 4
+        cd = extract_compactification_data(np.diag([L] * dim))
         fin = code.as_finite_code(np.diag([L] * dim), auto_logicals=False)
+        fin.gates, gates_compactify = code.gates.compactify(cd)
+        transphys = gates_compactify @ code.transphys_allphys
         fin_pullback = fin.checks.phase_pullback(fin.gates)
 
-        # the unfolded transversal gates of the finite code lie in the finite kernel, and no
-        # transversal generator was lost in the unfolding (source dimension is preserved)
-        assert fin.transphys_allphys.dim1 == K.dim1
-        assert (fin_pullback @ fin.transphys_allphys).is_zero()
+        # the transported transversal gates lie in the finite kernel, and no transversal
+        # generator was lost (source dimension is preserved)
+        assert transphys.dim1 == K.dim1
+        assert (fin_pullback @ transphys).is_zero()
 
-        # every individual unfolded transversal generator is code-space preserving
+        # every individual transported transversal generator is code-space preserving
         for li in range(len(K.dim1)):
             for g in range(K.dim1[li]):
                 gen = lin.Elem.zeros(K.dim1)
                 gen[li][g] = 1
-                assert (fin_pullback.h @ (fin.transphys_allphys.h @ gen)).is_zero()
+                assert (fin_pullback.h @ (transphys.h @ gen)).is_zero()
 
 
 def test_ti_ccz_3d_toric():
@@ -294,7 +299,7 @@ def test_find_gates_nonlocal_cc2d():
     cc_2d.set_local_gates([[], [((0,0),0), ((0,0),1)]])
     cc_2d.find_gates_nonlocal()
 
-    q = cc_2d.transphys_nonlocal
+    q = cc_2d.transphys_translog
     # surjective: the dual is injective
     assert sum(q.h.transpose().kernel().dim1) == 0
 

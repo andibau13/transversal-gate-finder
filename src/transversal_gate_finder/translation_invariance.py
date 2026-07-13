@@ -28,8 +28,9 @@ import numpy as np
 import twogroup_linalg as lin
 
 from . import flint_wrappers as fl
-from .core import (GateFinder, PhaseLocs, TwoGroupElem, TwoGroupHom, Z2Hom,
-                   _check_phase_locs_dims, assemble_pullback, pullback_column)
+from .core import (GateFinder, PhaseLocs, TransversalGateQueries, TwoGroupElem,
+                   TwoGroupHom, Z2Hom, _check_phase_locs_dims, assemble_pullback,
+                   pullback_column)
 
 Coord = tuple[int, ...]
 TISpecifier = tuple[Coord, int]  # (coordinate tuple, internal generator number)
@@ -563,7 +564,7 @@ def generate_ti_list(compactification_data, qubit_listlist):
     return output_listlist
 
 
-class TIGateFinder:
+class TIGateFinder(TransversalGateQueries):
     """Helper class for analyzing translation-invariant codes in n dimensions.
 
     Attributes:
@@ -577,13 +578,18 @@ class TIGateFinder:
             used by find_gates_nonlocal. A TITwoGroupHom from an abstract finite 2-group
             to the group of translates of the ansatz gates (phase_locs0 = self.gates);
             set it via set_local_gates. None before set_local_gates is called.
-        transphys_allphys: TwoGroupHom from the abstract group of translation-invariant
-            transversal gates to the group of configurations of all physical ansatz
-            gates. None before find_gates() is called.
-        transphys_nonlocal: Surjective TwoGroupHom from the abstract group of
-            translation-invariant transversal gates to its quotient by sums of
-            translates of local transversal gates. None before find_gates_nonlocal()
-            is called.
+        transphys_allphys: TwoGroupHom from the abstract group T of translation-invariant
+            transversal gates to the group G of all TI physical ansatz gate configurations
+            (phase_locs0 = self.gates). Set by find_gates(); kept as-is by find_gates_nonlocal
+            and find_gates_compactify, so find_phys_rep always returns TI ansatz-gate
+            coefficients. None before find_gates().
+        transphys_translog: Surjective TwoGroupHom from the transversal gates T to the abstract
+            group N of "non-trivial" transversal gates, together with self.rep_find_helper (its
+            kernel solve helper); find_phys_rep uses the triple (transphys_allphys, transphys_translog,
+            rep_find_helper) to turn a non-trivial gate into a physical representative. The notion of
+            "non-trivial" depends on which finder produced it: quotient by translates of local
+            transversal gates (find_gates_nonlocal) or non-trivial logical action on the compactified
+            code (find_gates_compactify). None before either is called.
     """
     def __init__(self, nr_qubits: int, dimension: int, checks=None, gates=None, other_checks=None):
         self.nr_qubits = nr_qubits
@@ -593,7 +599,7 @@ class TIGateFinder:
         self.gates = TIPhaseLocs(nr_qubits, dimension, gates)
         self.local_gates: Optional[TITwoGroupHom] = None
         self.transphys_allphys: Optional[TwoGroupHom] = None
-        self.transphys_nonlocal: Optional[TwoGroupHom] = None
+        self.transphys_translog: Optional[TwoGroupHom] = None
 
     def standardize_locs(self, listlist) -> list[set[TISpecifier]]:
         """Validate a list of checks/gates and bring it into standard form:
@@ -604,7 +610,7 @@ class TIGateFinder:
         for l, lgates in enumerate(self.gates.locs):
             print(f"\nLevel {l}")
             for gate in lgates:
-                print(gate)
+                print(set(gate))
 
     def set_local_gates(self, active_gates: Sequence[Sequence[tuple[Coord, int]]]) -> None:
         """Set self.local_gates from a list of active gate locations.
@@ -645,22 +651,11 @@ class TIGateFinder:
 
         tgf = GateFinder(total_dim * self.nr_qubits)
         tgf.checks = self.checks.compactify(compactification_data)
-        tgf.gates, gates_compactify = self.gates.compactify(compactification_data)
-        # unfold the TI transversal gates (if already computed) by transporting them along the
-        # induced compactification homomorphism; this correctly sums each transversal gate over all
-        # translates, including gate translates that collide onto the same finite qubit set.
-        if self.transphys_allphys is not None:
-            tgf.transphys_allphys = gates_compactify @ self.transphys_allphys
-        # manual gates: extra finite ansatz gates, not repeated per unit cell. They carry no
-        # transversal gate, so the unfolded transphys_allphys is padded with zero coefficients for them.
+        tgf.gates, _ = self.gates.compactify(compactification_data)
+        # manual gates: extra finite ansatz gates, not repeated per unit cell
         if manual_gates is not None:
             for l, lgates in enumerate(manual_gates):
                 tgf.gates.add_locs([[compactify_ti_specifier(compactification_data, spec) for spec in loc] for loc in lgates], l)
-            if self.transphys_allphys is not None:
-                padded = lin.Hom.zeros(tgf.gates.dims, tgf.transphys_allphys.dim1)
-                for l in range(len(tgf.transphys_allphys.h.dim0)):
-                    padded[l, :][:tgf.transphys_allphys.h.dim0[l], :] = tgf.transphys_allphys.h[l, :]
-                tgf.transphys_allphys = TwoGroupHom(padded, phase_locs0=tgf.gates)
         tgf.other_checks = self.other_checks.compactify(compactification_data)
 
         # logicals derived from the Z checks (if requested); must come first since it overwrites tgf.logicals
@@ -698,10 +693,11 @@ class TIGateFinder:
         configuration (the shift of each active gate is forgotten, which is
         self.local_gates.ti_sum()); these are quotiented out of T.
 
-        Sets self.transphys_nonlocal: surjective TwoGroupHom from T to the quotient
-        2-group. Elements of the quotient are classes of TI transversal gates that
-        differ by sums of translates of local transversal gates; nontrivial classes
-        cannot be generated locally.
+        Sets self.transphys_translog: surjective TwoGroupHom from T to the quotient
+        2-group N. Elements of N are classes of TI transversal gates that differ by sums
+        of translates of local transversal gates; nontrivial classes cannot be generated
+        locally. Also sets self.rep_find_helper (kernel solve helper for T -> N), so
+        find_phys_rep can return physical representatives.
         """
         self.find_gates()
         if self.local_gates is None:
@@ -712,23 +708,43 @@ class TIGateFinder:
         translate_sum = self.local_gates.ti_sum()
         quotient = self.transphys_allphys.h.quotient_image_by_image(
             (translate_sum @ local_transversal).h, self.transphys_solve_helper)
-        self.transphys_nonlocal = TwoGroupHom(quotient)
-        _, self.rep_find_helper = self.transphys_nonlocal.kernel(return_solve_helper = True)
+        self.transphys_translog = TwoGroupHom(quotient)
+        _, self.rep_find_helper = self.transphys_translog.kernel(return_solve_helper = True)
 
-    def find_phys_rep(self, nonlocal_gate) -> TwoGroupElem:
+    def find_gates_compactify(self, lattice, auto_logicals: bool = True, manual_logicals=None) -> None:
+        """Find transversal gates that are non-trivial after compactification onto a finite lattice.
+
+        Here "non-trivial" means acting non-trivially as a logical gate on the compactified
+        finite code (contrast find_gates_nonlocal, where non-trivial means "not a translation-
+        invariant sum of local terms"). Computes the translation-invariant transversal gates
+        (find_gates), builds the compactified finite code (as_finite_code) and transports the
+        transversal gates onto it via the induced compactification homomorphism, then runs the
+        finite code's logical-action analysis.
+
+        Keeps self.transphys_allphys as the translation-invariant map T -> G (from find_gates),
+        and steals the finite code's logical-action results onto self (translog_alllog,
+        transphys_translog, log_find_helper, rep_find_helper) plus a matching self.stabphys_allphys.
+        The inherited query methods (find_phys_rep, test_if_implemented, find_phys_rep_free,
+        print_transversal_logicals, ...) then act on the compactified code, but because
+        transphys_allphys stays the TI map, find_phys_rep returns representatives as coefficients
+        on the *translation-invariant* ansatz gates (one per unit cell), not on the finite gates.
         """
-        Can be called after find_gates_nonlocal().
-        Find a translation-invariant transversal gate configuration representing a given class of the quotient by local transversal gates.
-
-        Parameters:
-            nonlocal_gate: coefficient list for an Elem over the quotient 2-group (self.transphys_nonlocal.dim0)
-
-        Returns:
-            TwoGroupElem over the group of TI ansatz gate configurations (phase_locs = self.gates)
-        """
-        nonlocal_elem = lin.Elem(np.array(nonlocal_gate), self.transphys_nonlocal.dim0)
-        trans_rep = self.transphys_nonlocal.solve_with_helper(nonlocal_elem, self.rep_find_helper)
-        return self.transphys_allphys @ trans_rep
+        self.find_gates()
+        compactification_data = extract_compactification_data(lattice)
+        tgf = self.as_finite_code(lattice, auto_logicals=auto_logicals, manual_logicals=manual_logicals)
+        # recompactify the gates to obtain the induced hom whose target *is* tgf.gates, then transport
+        # the TI transversal gates onto the finite code and analyse their logical action there.
+        tgf.gates, gates_compactify = self.gates.compactify(compactification_data)
+        tgf.transphys_allphys = gates_compactify @ self.transphys_allphys
+        tgf.find_logical_action()
+        # steal the logical-action maps; self.transphys_allphys stays the TI map T -> G, so
+        # find_phys_rep expresses representatives as translation-invariant ansatz-gate coefficients
+        self.translog_alllog = tgf.translog_alllog
+        self.transphys_translog = tgf.transphys_translog
+        self.log_find_helper = tgf.log_find_helper
+        self.rep_find_helper = tgf.rep_find_helper
+        stabphys_transphys = self.transphys_translog.kernel()  # trivial-logical-action transversal gates
+        self.stabphys_allphys = self.transphys_allphys @ stabphys_transphys
 
     def __add__(self, other: "TIGateFinder") -> "TIGateFinder":
         if self.dimension != other.dimension:

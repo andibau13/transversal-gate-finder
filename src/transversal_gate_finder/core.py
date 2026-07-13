@@ -339,7 +339,108 @@ class TwoGroupElem:
         return ", ".join(terms)
 
 
-class GateFinder:
+class TransversalGateQueries:
+    """Mixin: query physical representatives of non-trivial transversal gates.
+
+    Mixed into GateFinder and TIGateFinder. All methods rely on the attributes computed by
+    GateFinder.find_logical_action (translog_alllog, transphys_translog, log_find_helper,
+    rep_find_helper, stabphys_allphys) together with transphys_allphys. On a TIGateFinder these
+    are populated by find_gates_compactify (find_gates_nonlocal only sets transphys_translog,
+    rep_find_helper and transphys_allphys, so on it only find_phys_rep / print_phys_rep apply).
+
+    Throughout, "non-trivial transversal gate" means an element of the 2-group
+    self.transphys_translog.dim0: the transversal logical gates for a GateFinder or a
+    TIGateFinder after find_gates_compactify, or the classes modulo local transversal gates
+    for a TIGateFinder after find_gates_nonlocal.
+    """
+
+    def print_transversal_logicals(self) -> None:
+        """Print the transversal logical gates (needs translog_alllog; not set by find_gates_nonlocal)."""
+        print(self.translog_alllog.to_string())
+
+    def print_physical_stabilizers(self) -> None:
+        """Print the physical transversal stabilizers (needs stabphys_allphys; not set by find_gates_nonlocal)."""
+        print(self.stabphys_allphys.to_string())
+
+    def find_phys_rep(self, nontrivial_gate) -> "TwoGroupElem":
+        """
+        Find a physical representative for a non-trivial transversal gate.
+
+        Parameters:
+            nontrivial_gate: coefficient list for an Elem over the group of non-trivial
+                transversal gates (self.transphys_translog.dim0)
+
+        Returns:
+            TwoGroupElem over the group of physical ansatz gate configurations
+            (phase_locs = self.transphys_allphys.phase_locs0)
+        """
+        elem = lin.Elem(np.array(nontrivial_gate), self.transphys_translog.dim0)
+        transphys_rep = self.transphys_translog.solve_with_helper(elem, self.rep_find_helper)
+        return self.transphys_allphys @ transphys_rep
+
+    def print_phys_rep(self, nontrivial_gate) -> None:
+        print(self.find_phys_rep(nontrivial_gate).to_string())
+
+    def test_if_implemented(self, gates) -> Optional[lin.Elem]:
+        """
+        Test whether a given diagonal logical gate has a transversal implementation
+        (needs translog_alllog / log_find_helper; not set by find_gates_nonlocal).
+
+        Parameters:
+            gates: Dict mapping (qubit set, gate level) to coefficient, where the qubit
+                set is a set of logical qubit numbers of the CSS code and the gate level l
+                corresponds to order 2^(l+1); the coefficient is the numerator of the phase
+                factor relative to the denominator 2^(l+1).
+
+        Returns:
+            None if the logical gate is not implemented by any transversal gate. Otherwise an Elem over the abstract 2-group of transversal logicals (the source of self.translog_alllog), which can be passed to find_phys_rep to obtain a physical implementation.
+        """
+        loc_levels = {frozenset(loc): (lev, i)
+                      for lev, llocs in enumerate(self.translog_alllog.phase_locs0.locs) for i, loc in enumerate(llocs)}
+
+        target = lin.Elem.zeros(self.translog_alllog.dim0)
+        for (gate, l), coeff in gates.items():
+            c = int(coeff) % 2**(l+1)
+            if c == 0:
+                continue
+            entry = loc_levels.get(frozenset(gate))
+            if entry is None:
+                return None
+            lev, i = entry
+            if lev >= l:
+                val = c * 2**(lev-l)
+            else:
+                # the location only supports logical gates of order 2^(lev+1)
+                if c % 2**(l-lev) != 0:
+                    return None
+                val = c // 2**(l-lev)
+            target[lev][i] = (int(target[lev][i]) + val) % 2**(lev+1)
+
+        try:
+            return self.translog_alllog.solve_with_helper(target, self.log_find_helper)
+        except ValueError:
+            return None
+
+    def find_phys_rep_free(self, gates) -> Optional["TwoGroupElem"]:
+        """
+        Find a physical representative for a logical gate given in free form (a dict of
+        {(logical qubit set, gate level): coefficient}, see test_if_implemented), or None
+        if the gate has no transversal implementation.
+        """
+        translog = self.test_if_implemented(gates)
+        if translog is None:
+            return None
+        return self.find_phys_rep(translog.v)
+
+    def print_phys_rep_free(self, gates) -> None:
+        rep = self.find_phys_rep_free(gates)
+        if rep is None:
+            print("no transversal implementation")
+        else:
+            print(rep.to_string())
+
+
+class GateFinder(TransversalGateQueries):
     """
     Helper class for finding diagonal transversal gates on a given CSS code.
 
@@ -408,95 +509,6 @@ class GateFinder:
         _, self.log_find_helper = self.translog_alllog.kernel(return_solve_helper = True) # allows test_if_implemented to solve for a preimage in the transversal logicals
         stabphys_transphys, self.rep_find_helper = self.transphys_translog.kernel(return_solve_helper = True) # stabilizer physical -> transversal physical
         self.stabphys_allphys = self.transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
-
-    def print_transversal_logicals(self) -> None:
-        """
-        Can be called after find_gates()
-        """
-        print(self.translog_alllog.to_string())
-
-    def print_physical_stabilizers(self) -> None:
-        """
-        Can be called after find_gates()
-        """
-        print(self.stabphys_allphys.to_string())
-
-    def find_phys_rep(self, logic_gate) -> TwoGroupElem:
-        """
-        Can be called after find_gates().
-        Find physical representative for transversal logical gate.
-
-        Parameters:
-            logic_gate: coefficient list, linear combination of generator transversal logicals
-
-        Returns:
-            TwoGroupElem over the group of physical ansatz gate configurations (phase_locs = self.gates)
-        """
-        logic_elem = lin.Elem(np.array(logic_gate), self.translog_alllog.dim1)
-        transphys_rep = self.transphys_translog.solve_with_helper(logic_elem, self.rep_find_helper)
-        return self.transphys_allphys @ transphys_rep
-
-    def print_phys_rep(self, logic_gate) -> None:
-        print(self.find_phys_rep(logic_gate).to_string())
-
-    def test_if_implemented(self, gates) -> Optional[lin.Elem]:
-        """
-        Can be called after find_gates().
-        Test whether a given diagonal logical gate has a transversal implementation.
-
-        Parameters:
-            gates: Dict mapping (qubit set, gate level) to coefficient, where the qubit
-                set is a set of logical qubit numbers of the CSS code and the gate level l
-                corresponds to order 2^(l+1); the coefficient is the numerator of the phase
-                factor relative to the denominator 2^(l+1).
-
-        Returns:
-            None if the logical gate is not implemented by any transversal gate. Otherwise an Elem over the abstract 2-group of transversal logicals (the source of self.translog_alllog), which can be passed to find_phys_rep to obtain a physical implementation.
-        """
-        loc_levels = {frozenset(loc): (lev, i)
-                      for lev, llocs in enumerate(self.translog_alllog.phase_locs0.locs) for i, loc in enumerate(llocs)}
-
-        target = lin.Elem.zeros(self.translog_alllog.dim0)
-        for (gate, l), coeff in gates.items():
-            c = int(coeff) % 2**(l+1)
-            if c == 0:
-                continue
-            entry = loc_levels.get(frozenset(gate))
-            if entry is None:
-                return None
-            lev, i = entry
-            if lev >= l:
-                val = c * 2**(lev-l)
-            else:
-                # the location only supports logical gates of order 2^(lev+1)
-                if c % 2**(l-lev) != 0:
-                    return None
-                val = c // 2**(l-lev)
-            target[lev][i] = (int(target[lev][i]) + val) % 2**(lev+1)
-
-        try:
-            return self.translog_alllog.solve_with_helper(target, self.log_find_helper)
-        except ValueError:
-            return None
-
-    def find_phys_rep_free(self, gates) -> Optional[TwoGroupElem]:
-        """
-        Can be called after find_gates().
-        Find a physical representative for a logical gate given in free form (a dict of
-        {(logical qubit set, gate level): coefficient}, see test_if_implemented), or None
-        if the gate has no transversal implementation.
-        """
-        translog = self.test_if_implemented(gates)
-        if translog is None:
-            return None
-        return self.find_phys_rep(translog.v)
-
-    def print_phys_rep_free(self, gates) -> None:
-        rep = self.find_phys_rep_free(gates)
-        if rep is None:
-            print("no transversal implementation")
-        else:
-            print(rep.to_string())
 
     def test_commutation(self) -> None:
         """Test if z checks commute with x checks and x logicals."""
