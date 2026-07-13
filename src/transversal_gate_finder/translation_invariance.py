@@ -28,8 +28,8 @@ import numpy as np
 import twogroup_linalg as lin
 
 from . import flint_wrappers as fl
-from .core import (GateFinder, TwoGroupElem, TwoGroupHom, _check_phase_locs_dims,
-                   assemble_pullback, pullback_column)
+from .core import (GateFinder, PhaseLocs, TwoGroupElem, TwoGroupHom, Z2Hom,
+                   _check_phase_locs_dims, assemble_pullback, pullback_column)
 
 Coord = tuple[int, ...]
 TISpecifier = tuple[Coord, int]  # (coordinate tuple, internal generator number)
@@ -141,6 +141,19 @@ class TIPhaseLocs:
         qubits = [(tuple(coord), intern) for coord in group for intern in range(self.dim)]
         self.add_locs(combinations(qubits, k), l)
 
+    def compactify(self, compactification_data) -> PhaseLocs:
+        """Compactify onto a finite lattice, returning a plain (finite) PhaseLocs.
+
+        Every generator support is repeated once per unit cell and its (coord, internal)
+        specifiers are mapped to global qubit numbers (see extract_compactification_data).
+        Coincident specifiers collapse idempotently (handled by PhaseLocs.add_loc).
+        """
+        total_dim = compactification_data[2]
+        result = PhaseLocs(total_dim * self.dim)
+        for l, llocs in enumerate(self.locs):
+            result.add_locs(generate_ti_list(compactification_data, llocs), l)
+        return result
+
 
 class TIZ2Hom:
     """Translation-invariant Z2-linear map between infinite Z2 modules, in sparse column form.
@@ -204,6 +217,18 @@ class TIZ2Hom:
 
     def is_zero(self) -> bool:
         return all(len(col) == 0 for col in self.h)
+
+    def compactify(self, compactification_data) -> Z2Hom:
+        """Compactify onto a finite lattice, returning a plain (finite) Z2Hom.
+
+        Every column is repeated once per unit cell and its (coord, internal) specifiers are
+        mapped to global qubit numbers (see extract_compactification_data). Coincident
+        specifiers cancel in Z2 (handled by Z2Hom.add_columns).
+        """
+        total_dim = compactification_data[2]
+        result = Z2Hom(total_dim * self.dim0)
+        result.add_columns(generate_ti_list(compactification_data, self.h))
+        return result
 
     def phase_pullback(self, phase_locs: TIPhaseLocs) -> "TITwoGroupHom":
         """Pull back translation-invariant phase functions along this Z2-linear map.
@@ -462,6 +487,62 @@ class TITwoGroupElem:
         return ", ".join(terms)
 
 
+def extract_compactification_data(lattice):
+    """Compute the compactification data for putting a TI code on a finite lattice.
+
+    Parameters:
+        lattice: Matrix whose *rows* are the boundary vectors identified with the origin.
+
+    Returns:
+        The tuple (lattice_hnf, cum_dims, total_dim, periods), where lattice_hnf is the
+        (row-operation) Hermite normal form of the lattice, periods its diagonal (the
+        number of cells along each axis), total_dim the number of unit cells, and cum_dims
+        the cumulative cell strides used to index cells. This tuple is passed around as
+        "compactification_data" by TIZ2Hom.compactify, TIPhaseLocs.compactify and the
+        coordinate helpers of TIGateFinder.
+    """
+    lattice = np.asarray(lattice, dtype=int)
+    lattice_hnf = fl.hnf(lattice)[0]  # row-operation hnf
+    periods = lattice_hnf.diagonal()
+    total_dim = int(np.prod(periods))
+    cum_dims = np.insert(np.cumprod(periods), 0, 1)[:-1]
+    return lattice_hnf, cum_dims, total_dim, periods
+
+
+def compactify_ti_specifier(compactification_data, specifier: TISpecifier) -> int:
+    """Map a translation-invariant (coord, internal number) specifier to a global qubit number.
+
+    The coordinate is reduced modulo the boundary lattice; the internal numbers of a cell are
+    laid out contiguously across all cells. See extract_compactification_data for the meaning
+    of compactification_data.
+    """
+    lattice_hnf, cum_dims, total_dim, _ = compactification_data
+    coord, internal = specifier
+    coord = np.array(coord)
+    for d in range(len(coord)):
+        offs = coord[d] // lattice_hnf[d, d]
+        coord = coord - offs * lattice_hnf[d, :]
+    return int(np.dot(coord, cum_dims) + internal * total_dim)
+
+
+def nr_to_coord(nr, compactification_data) -> np.ndarray:
+    """Convert a cell index (0 <= nr < total_dim) into its unit-cell coordinate vector."""
+    _, cum_dims, _, periods = compactification_data
+    return np.array(nr)[None] // cum_dims % periods
+
+
+def generate_ti_list(compactification_data, qubit_listlist):
+    """Repeat each TI location once per unit cell, mapping the specifiers to global qubit numbers."""
+    total_dim = compactification_data[2]
+    output_listlist = []
+    for i in range(total_dim):
+        shift_coord = nr_to_coord(i, compactification_data)
+        for qubit_list in qubit_listlist:
+            output_listlist.append([compactify_ti_specifier(compactification_data, (coord + shift_coord, intern))
+                                    for coord, intern in qubit_list])
+    return output_listlist
+
+
 class TIGateFinder:
     """Helper class for analyzing translation-invariant codes in n dimensions.
 
@@ -539,41 +620,27 @@ class TIGateFinder:
             manual_logicals: Optional list of X logicals given in (coord, internal) format; in contrast to ti_logicals these are not repeated for every unit cell, but provide a convenient way of defining individual finite-code logicals.
             manual_gates: Additional ansatz gates for the finite code, in the same format as self.gates.locs. In contrast to self.gates, they are not repeated for every unit cell; the (coord, internal) qubit specifiers just provide a convenient way of defining individual finite-code gate locations.
         """
-        lattice = np.asarray(lattice, dtype=int)
-        lattice_hnf = fl.hnf(lattice)[0] # row-operation hnf
-        periods = lattice_hnf.diagonal()
-        total_dim = np.prod(periods)
-        cum_dims = np.cumprod(periods)
-        cum_dims = np.insert(cum_dims, 0, 1)[:-1]
-
-        def to_finite_qubits(loc_listlist):
-            """Turn (coord, internal) specifiers into finite qubit numbers, without repeating per unit cell.
-
-            Returns each location as a list that may repeat a qubit when distinct specifiers
-            collide under the boundary conditions; the consumer reduces it (idempotently for
-            phase-function supports, by Z2 parity for check/logical columns).
-            """
-            return [[TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, np.array(coord), intern) for coord, intern in loc]
-                    for loc in self.standardize_locs(loc_listlist)]
+        compactification_data = extract_compactification_data(lattice)
+        total_dim = compactification_data[2]
 
         tgf = GateFinder(total_dim * self.nr_qubits)
-        tgf.checks.add_columns(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.checks.h))
-        for l, lgates in enumerate(self.gates.locs):
-            tgf.gates.add_locs(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, lgates), l)
+        tgf.checks = self.checks.compactify(compactification_data)
+        tgf.gates = self.gates.compactify(compactification_data)
+        # manual gates: (coord, internal) specifiers mapped to global qubits, not repeated per unit cell
         if manual_gates is not None:
             for l, lgates in enumerate(manual_gates):
-                tgf.gates.add_locs(to_finite_qubits(lgates), l)
-        tgf.other_checks.add_columns(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.other_checks.h))
+                tgf.gates.add_locs([[compactify_ti_specifier(compactification_data, spec) for spec in loc] for loc in lgates], l)
+        tgf.other_checks = self.other_checks.compactify(compactification_data)
 
         # logicals derived from the Z checks (if requested); must come first since it overwrites tgf.logicals
         if auto_logicals:
             tgf.logicals_from_other_checks()
         # translation-invariant logicals: one copy for every unit cell (like the checks)
         if ti_logicals is not None:
-            tgf.logicals.add_columns(TIGateFinder.generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, self.standardize_locs(ti_logicals)))
+            tgf.logicals.add_columns(TIZ2Hom(self.nr_qubits, self.dimension, ti_logicals).compactify(compactification_data))
         # manual logicals: finite-code specifiers, not repeated per unit cell
         if manual_logicals is not None:
-            tgf.logicals.add_columns(to_finite_qubits(manual_logicals))
+            tgf.logicals.add_columns([[compactify_ti_specifier(compactification_data, spec) for spec in loc] for loc in manual_logicals])
 
         if self.transphys_allphys is not None:
             # unfold the translation-invariant transversal gates: apply the TI gate at every unit cell.
@@ -586,9 +653,9 @@ class TIGateFinder:
             unfolded = lin.Hom.zeros(tgf.gates.dims, K.dim1)
             for l in range(len(K.dim0)):
                 for i in range(total_dim):
-                    shift = TIGateFinder.nr_to_coord(i, cum_dims, periods)
+                    shift = nr_to_coord(i, compactification_data)
                     for g in range(K.dim0[l]):
-                        loc = frozenset(TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, np.array(coord) + shift, intern)
+                        loc = frozenset(compactify_ti_specifier(compactification_data, (coord + shift, intern))
                                         for coord, intern in self.gates.locs[l][g])
                         flev, idx = loc_index[loc]
                         unfolded[flev, :][idx, :] += 2 ** (flev - l) * K[l, :][g, :]
@@ -596,46 +663,6 @@ class TIGateFinder:
             tgf.transphys_allphys = TwoGroupHom(unfolded, phase_locs0=tgf.gates)
 
         return tgf
-
-    @staticmethod
-    def reduce_coordinate(coord, hnf):
-        """Reduce a coordinate vector to lie within the parallelogram defined by the hnf."""
-        for d in range(len(coord)):
-            offs = coord[d] // hnf[d,d]
-            coord -= offs * hnf[d, :]
-        return coord
-
-    @staticmethod
-    def nr_to_coord(nr, cum_dims, periods):
-        return np.array(nr)[None] // cum_dims % periods
-
-    @staticmethod
-    def coord_to_qubit(lattice_hnf, cum_dims, total_dim, coord, internal):
-        """Take a pair of (coordinate vector modulo PBC lattice, internal qubit number) and transform it into a global qubit number.
-
-        Arguments:
-            lattice_hnf: pbc lattice in hermite normal form
-            cum_dims: cumulative product of diagonal of lattice_hnf starting from 1
-            coord: unit cell coordinate (not necessarily reduced to the standard box)
-            internal: internal qubit number
-            output: qubit number
-        """
-        for d in range(len(coord)):
-            offs = coord[d] // lattice_hnf[d,d]
-            coord -= offs * lattice_hnf[d, :]
-
-        return int(np.dot(coord, cum_dims) + internal * total_dim)
-
-    @staticmethod
-    def generate_ti_list(lattice_hnf, cum_dims, total_dim, periods, qubit_listlist):
-        """Take a list of lists of coordinates + internal qubit nr's and turn it into a list of list of qubits."""
-        output_listlist = []
-        for i in range(total_dim):
-            shift_coord = TIGateFinder.nr_to_coord(i, cum_dims, periods)
-            for qubit_list in qubit_listlist:
-                output_listlist.append([TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, coord+shift_coord, intern) for coord, intern in qubit_list])
-
-        return output_listlist
 
     def find_gates(self) -> None:
         """Compute the space of all translation-invariant transversal gates.
