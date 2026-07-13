@@ -296,8 +296,8 @@ def test_find_gates_nonlocal_cc2d():
     cc_2d = tg.TIGateFinder(2, 2)
     cc_2d.checks.add_columns([[((0,0),0), ((0,0),1), ((1,0),0), ((0,1),1), ((0,1),0), ((-1,1),1)]])
     cc_2d.other_checks = cc_2d.checks
-    cc_2d.gates.add_all_single_qubit_gates(1)
-    cc_2d.gates.add_gates_in_groups([[((0,0),0),((0,0),1),((-1,1),1),((-1,0),1)]], 0, 2)
+    cc_2d.gates.add_all_single_locs(1)
+    cc_2d.gates.add_locs_in_groups([[((0,0),0),((0,0),1),((-1,1),1),((-1,0),1)]], 0, 2)
     cc_2d.set_local_gates([[], [((0,0),0), ((0,0),1)]])
     results = cc_2d.find_gates_nonlocal()
 

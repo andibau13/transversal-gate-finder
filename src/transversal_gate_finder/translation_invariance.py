@@ -122,11 +122,11 @@ class TIPhaseLocs:
         for loc in locs:
             self.add_loc(loc, l)
 
-    def add_all_single_qubit_gates(self, l: int) -> None:
+    def add_all_single_locs(self, l: int) -> None:
         """Add all singleton supports {((0,...,0), intern)} at level l (single-qubit ansatz gates of order 2^(l+1))."""
         self.add_locs([{((0,) * self.dimension, intern)} for intern in range(self.dim)], l)
 
-    def add_gates_in_groups(self, groups, l: int, k: int) -> None:
+    def add_locs_in_groups(self, groups, l: int, k: int) -> None:
         """Add all k-subset supports at level l within each group in "groups".
 
         Each group is a collection of (coord tuple, internal number) pairs; groups may
@@ -137,7 +137,7 @@ class TIPhaseLocs:
         for group in _standardize_ti_locs(groups, self.dim, self.dimension):
             self.add_locs(combinations(group, k), l)
 
-    def add_gates_in_coord_group(self, group, l: int, k: int) -> None:
+    def add_locs_in_coord_group(self, group, l: int, k: int) -> None:
         """Add all k-subset supports at level l among the qubits supported on the given set of coordinates."""
         qubits = [(tuple(coord), intern) for coord in group for intern in range(self.dim)]
         self.add_locs(combinations(qubits, k), l)
