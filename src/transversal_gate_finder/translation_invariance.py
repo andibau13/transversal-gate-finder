@@ -53,7 +53,7 @@ def _standardize_ti_locs(listlist, dim: int, dimension: int) -> list[set[TISpeci
     return standardized
 
 
-def normalize_ti_loc(loc: Iterable[TISpecifier]) -> tuple[Coord, set[TISpecifier]]:
+def _normalize_ti_loc(loc: Iterable[TISpecifier]) -> tuple[Coord, set[TISpecifier]]:
     """Split a translation-invariant location into a shift and a normalized location.
 
     The normalized location is shifted such that its "smallest" specifier sits at
@@ -95,7 +95,7 @@ class TIPhaseLocs:
         """Number of generators per level."""
         return [len(llocs) for llocs in self.locs]
 
-    def extend_levels(self, l: int) -> None:
+    def _extend_levels(self, l: int) -> None:
         """Reserve space for generators of levels up to l."""
         if len(self.locs) <= l:
             self.locs += [[] for _ in range(l - len(self.locs) + 1)]
@@ -108,8 +108,8 @@ class TIPhaseLocs:
         moved up to l (a support is kept only at its highest level).
         """
         (standardized,) = _standardize_ti_locs([loc], self.dim, self.dimension)
-        norm = frozenset(normalize_ti_loc(standardized)[1])
-        self.extend_levels(l)
+        norm = frozenset(_normalize_ti_loc(standardized)[1])
+        self._extend_levels(l)
         if any(norm in self.locs[higher] for higher in range(l, len(self.locs))):
             return
         for lower in range(l):
@@ -282,7 +282,7 @@ class TIZ2Hom:
                 # label each target combination by its shift and normalized form
                 keyed = {}
                 for combo, val in column.items():
-                    shift, normalized = normalize_ti_loc(combo)
+                    shift, normalized = _normalize_ti_loc(combo)
                     keyed[(shift, frozenset(normalized))] = val
                 lcols.append(keyed)
             columns.append(lcols)
@@ -294,7 +294,7 @@ class TIZ2Hom:
         target_locs = TIPhaseLocs(self.dim1, self.dimension)
         ti_support: list[list[TISpecifier]] = []
         for lev, lkeys in enumerate(target_keys):
-            target_locs.extend_levels(lev)
+            target_locs._extend_levels(lev)
             class_indices: dict = {}
             support_lev = []
             for shift, cls in lkeys:
