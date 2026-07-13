@@ -29,7 +29,7 @@ import twogroup_linalg as lin
 
 from . import flint_wrappers as fl
 from .core import (GateFinder, TwoGroupElem, TwoGroupHom, _check_phase_locs_dims,
-                   assemble_pullback, pullback_column, quotient_image_by_image)
+                   assemble_pullback, pullback_column)
 
 Coord = tuple[int, ...]
 TISpecifier = tuple[Coord, int]  # (coordinate tuple, internal generator number)
@@ -70,20 +70,21 @@ class TIPhaseLocs:
 
     Each generator of level l represents a translation-invariant phase function:
     the phase function with support locs[l][i] applied at every lattice translate.
-    Supports are always stored normalized (add_locs normalizes automatically).
+    Supports are always stored normalized and consolidated (add_loc normalizes and
+    keeps each support only at its highest level).
 
     Attributes:
         dim: number of module generators (qubits) per unit cell
         dimension: number of spatial dimensions
         locs: locs[l][i] is the normalized support of the i-th generator of level l,
-            a set of (coordinate tuple, internal number) pairs
+            a frozenset of (coordinate tuple, internal number) pairs
     """
 
     def __init__(self, dim: int, dimension: int,
                  locs: Optional[Sequence[Sequence[Iterable[TISpecifier]]]] = None):
         self.dim = dim
         self.dimension = dimension
-        self.locs: list[list[set[TISpecifier]]] = []
+        self.locs: list[list[frozenset[TISpecifier]]] = []
         if locs is not None:
             for l, llocs in enumerate(locs):
                 self.add_locs(llocs, l)
@@ -98,11 +99,27 @@ class TIPhaseLocs:
         if len(self.locs) <= l:
             self.locs += [[] for _ in range(l - len(self.locs) + 1)]
 
-    def add_locs(self, locs: Iterable[Iterable[TISpecifier]], l: int) -> None:
-        """Append generator supports at level l, validating and normalizing them."""
+    def add_loc(self, loc: Iterable[TISpecifier], l: int) -> None:
+        """Add a single generator support at level l, validating, normalizing and consolidating.
+
+        The support is normalized (see normalize_ti_loc). Does nothing if the normalized
+        support already occurs at level l or higher; if it occurs at a lower level it is
+        moved up to l (a support is kept only at its highest level).
+        """
+        (standardized,) = _standardize_ti_locs([loc], self.dim, self.dimension)
+        norm = frozenset(normalize_ti_loc(standardized)[1])
         self.extend_levels(l)
-        for loc in _standardize_ti_locs(locs, self.dim, self.dimension):
-            self.locs[l].append(normalize_ti_loc(loc)[1])
+        if any(norm in self.locs[higher] for higher in range(l, len(self.locs))):
+            return
+        for lower in range(l):
+            if norm in self.locs[lower]:
+                self.locs[lower].remove(norm)
+        self.locs[l].append(norm)
+
+    def add_locs(self, locs: Iterable[Iterable[TISpecifier]], l: int) -> None:
+        """Add generator supports at level l, validating and normalizing them (see add_loc)."""
+        for loc in locs:
+            self.add_loc(loc, l)
 
     def add_all_single_qubit_gates(self, l: int) -> None:
         """Add all singleton supports {((0,...,0), intern)} at level l (single-qubit ansatz gates of order 2^(l+1))."""
@@ -116,24 +133,13 @@ class TIPhaseLocs:
         """
         if isinstance(groups, TIZ2Hom):
             groups = groups.h
-        loc_set = set()
         for group in _standardize_ti_locs(groups, self.dim, self.dimension):
-            loc_set.update(frozenset(normalize_ti_loc(comb)[1]) for comb in combinations(group, k))
-        self.add_locs(map(set, loc_set), l)
+            self.add_locs(combinations(group, k), l)
 
     def add_gates_in_coord_group(self, group, l: int, k: int) -> None:
         """Add all k-subset supports at level l among the qubits supported on the given set of coordinates."""
         qubits = [(tuple(coord), intern) for coord in group for intern in range(self.dim)]
-        loc_set = set(frozenset(normalize_ti_loc(comb)[1]) for comb in combinations(qubits, k))
-        self.add_locs(map(set, loc_set), l)
-
-    def consolidate(self) -> None:
-        """Remove duplicate supports, keeping a support only at the highest level where it occurs."""
-        current = set()
-        for l in reversed(range(len(self.locs))):
-            llocs = set(map(frozenset, self.locs[l])) - current
-            current |= llocs
-            self.locs[l] = list(map(set, llocs))
+        self.add_locs(combinations(qubits, k), l)
 
 
 class TIZ2Hom:
@@ -248,7 +254,7 @@ class TIZ2Hom:
             for shift, cls in lkeys:
                 if cls not in class_indices:
                     class_indices[cls] = len(target_locs.locs[lev])
-                    target_locs.locs[lev].append(set(cls))
+                    target_locs.locs[lev].append(cls)
                 support_lev.append((shift, class_indices[cls]))
             ti_support.append(support_lev)
 
@@ -541,8 +547,13 @@ class TIGateFinder:
         cum_dims = np.insert(cum_dims, 0, 1)[:-1]
 
         def to_finite_qubits(loc_listlist):
-            """Turn (coord, internal) specifiers into finite qubit numbers, without repeating per unit cell."""
-            return [{TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, np.array(coord), intern) for coord, intern in loc}
+            """Turn (coord, internal) specifiers into finite qubit numbers, without repeating per unit cell.
+
+            Returns each location as a list that may repeat a qubit when distinct specifiers
+            collide under the boundary conditions; the consumer reduces it (idempotently for
+            phase-function supports, by Z2 parity for check/logical columns).
+            """
+            return [[TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, np.array(coord), intern) for coord, intern in loc]
                     for loc in self.standardize_locs(loc_listlist)]
 
         tgf = GateFinder(total_dim * self.nr_qubits)
@@ -565,13 +576,23 @@ class TIGateFinder:
             tgf.logicals.add_columns(to_finite_qubits(manual_logicals))
 
         if self.transphys_allphys is not None:
-            # unfold the translation-invariant transversal gates: repeat the TI gate once for every unit cell.
-            # generate_ti_list orders the finite gates cell-major, so each level block is vertically tiled;
-            # manual gates come after the unfolded ones at each level and get zero coefficients.
+            # unfold the translation-invariant transversal gates: apply the TI gate at every unit cell.
+            # Each TI target generator (l, g) applied at cell i lands on a finite gate loc; that loc may
+            # have been consolidated to a higher level fl of tgf.gates (or merged with other translates),
+            # so we look up its level/index and add 2^(fl-l) * K[l, :][g, :] there (2^(fl-l) rescales the
+            # phase 1/2^(l+1) to the generator 1/2^(fl+1)), accumulating merged contributions.
             K = self.transphys_allphys.h
+            loc_index = {loc: (flev, i) for flev, llocs in enumerate(tgf.gates.locs) for i, loc in enumerate(llocs)}
             unfolded = lin.Hom.zeros(tgf.gates.dims, K.dim1)
             for l in range(len(K.dim0)):
-                unfolded[l, :][:total_dim * K.dim0[l], :] = np.tile(K[l, :], (total_dim, 1))
+                for i in range(total_dim):
+                    shift = TIGateFinder.nr_to_coord(i, cum_dims, periods)
+                    for g in range(K.dim0[l]):
+                        loc = frozenset(TIGateFinder.coord_to_qubit(lattice_hnf, cum_dims, total_dim, np.array(coord) + shift, intern)
+                                        for coord, intern in self.gates.locs[l][g])
+                        flev, idx = loc_index[loc]
+                        unfolded[flev, :][idx, :] += 2 ** (flev - l) * K[l, :][g, :]
+            unfolded.reduce_mod()
             tgf.transphys_allphys = TwoGroupHom(unfolded, phase_locs0=tgf.gates)
 
         return tgf
@@ -651,9 +672,8 @@ class TIGateFinder:
         local_transversal = local_pullback.kernel()
         # sum over all translates: each active local gate (shift, gate_nr) contributes to the TI gate gate_nr
         translate_sum = self.local_gates.ti_sum()
-        quotient = quotient_image_by_image(self.transphys_allphys.h,
-                                           (translate_sum @ local_transversal).h,
-                                           self.transphys_solve_helper)
+        quotient = self.transphys_allphys.h.quotient_image_by_image(
+            (translate_sum @ local_transversal).h, self.transphys_solve_helper)
         self.transphys_nonlocal = TwoGroupHom(quotient)
         _, self.rep_find_helper = self.transphys_nonlocal.kernel(return_solve_helper = True)
 

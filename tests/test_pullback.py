@@ -54,6 +54,8 @@ def test_pullback_matches_direct_evaluation():
     rng = np.random.default_rng(0)
     for trial in range(10):
         n, m, checks, gates = rand_code_and_gates(rng)
+        # PhaseLocs consolidates duplicate/cross-level supports, so use its canonical locs
+        gates = [[set(loc) for loc in llocs] for llocs in tg.PhaseLocs(n, gates).locs]
         pullback, check_gate_locs = finite_pullback(n, checks, gates)
 
         coeffs = [rng.integers(0, 2 ** (l + 1), size=len(gates[l])) for l in range(3)]
@@ -78,8 +80,10 @@ def test_kernel_matches_brute_force():
         n = int(rng.integers(3, 6))
         m = int(rng.integers(2, 4))
         checks = [sorted(rng.choice(n, size=rng.integers(2, n + 1), replace=False).tolist()) for _ in range(m)]
+        # two distinct level-2 singletons so PhaseLocs consolidation leaves the gate count unchanged
+        q2 = rng.choice(n, size=2, replace=False)
         gates = [[set(rng.choice(n, size=min(3, n), replace=False).tolist())], [],
-                 [{int(rng.integers(0, n))}, {int(rng.integers(0, n))}]]
+                 [{int(q2[0])}, {int(q2[1])}]]
 
         pullback, _ = finite_pullback(n, checks, gates)
         K = pullback.kernel()
@@ -145,10 +149,10 @@ def test_ti_pullback_matches_direct_evaluation():
     for trial in range(8):
         dim, nq, checks, gates = rand_ti_code_and_gates(rng)
         pullback, check_gate_locs = ti_pullback(nq, dim, checks, gates)
-        # normalized gate locations as used by the pullback
+        # normalized, consolidated gate locations as used by the pullback
         ngates = tg.TIPhaseLocs(nq, dim, gates).locs
 
-        coeffs = [rng.integers(0, 2 ** (l + 1), size=len(gates[l])) for l in range(3)]
+        coeffs = [rng.integers(0, 2 ** (l + 1), size=len(ngates[l])) for l in range(3)]
         image = pullback @ lin.Elem(np.concatenate(coeffs), pullback.dim1)
 
         for rep in range(5):
@@ -177,9 +181,10 @@ def test_local_pullback_matches_direct_evaluation():
         dim, nq, checks, gates = rand_ti_code_and_gates(rng)
         code = tg.TIGateFinder(nq, dim, checks=[list(c) for c in checks],
                                gates=[[set(g) for g in lg] for lg in gates])
-        # random active locations for each gate type
-        active_gates = [[(tuple(int(x) for x in rng.integers(-2, 3, size=dim)), int(rng.integers(0, len(gates[l]))))
-                         for _ in range(int(rng.integers(1, 4)))] for l in range(3)]
+        # random active locations for each gate type (indexing the consolidated code.gates)
+        gdims = code.gates.dims
+        active_gates = [[(tuple(int(x) for x in rng.integers(-2, 3, size=dim)), int(rng.integers(0, gdims[l])))
+                         for _ in range(int(rng.integers(1, 4)))] if gdims[l] else [] for l in range(3)]
         code.set_local_gates(active_gates)
 
         local_pb = code.checks.phase_pullback(code.gates) @ code.local_gates
@@ -231,18 +236,17 @@ def test_ti_kernel_unfolds_to_finite_kernel():
         fin = code.as_finite_code(np.diag([L] * dim), auto_logicals=False)
         fin_pullback = fin.checks.phase_pullback(fin.gates)
 
-        # the unfolded transversal gates of the finite code lie in the finite kernel
+        # the unfolded transversal gates of the finite code lie in the finite kernel, and no
+        # transversal generator was lost in the unfolding (source dimension is preserved)
+        assert fin.transphys_allphys.dim1 == K.dim1
         assert (fin_pullback @ fin.transphys_allphys).is_zero()
 
+        # every individual unfolded transversal generator is code-space preserving
         for li in range(len(K.dim1)):
             for g in range(K.dim1[li]):
                 gen = lin.Elem.zeros(K.dim1)
                 gen[li][g] = 1
-                c_ti = K @ gen
-                # same coefficient at all translates; finite gates are ordered cell-major
-                v_fin = np.concatenate([np.tile(np.asarray(c_ti[l]), L ** dim) for l in range(3)])
-                assert (fin_pullback.h @ lin.Elem(v_fin, fin_pullback.h.dim1)).is_zero()
-                assert np.array_equal((fin.transphys_allphys.h @ gen).v, v_fin)
+                assert (fin_pullback.h @ (fin.transphys_allphys.h @ gen)).is_zero()
 
 
 def test_ti_ccz_3d_toric():
@@ -272,9 +276,9 @@ def test_steane_end_to_end():
     steane.find_gates()
     assert steane.translog_alllog.dim1 == [0, 1]
     # logical S is transversally implemented, logical T is not
-    rep = steane.find_phys_rep_free([[], [{0}]], [1])
+    rep = steane.find_phys_rep_free({(frozenset({0}), 1): 1})
     assert rep is not None
-    assert steane.test_if_implemented([[], [], [{0}]], [1]) is None
+    assert steane.test_if_implemented({(frozenset({0}), 2): 1}) is None
     # physical S-type stabilizers: one order-2 generator per X check
     assert steane.stabphys_allphys.dim1 == [3, 0]
 
@@ -282,8 +286,6 @@ def test_steane_end_to_end():
 def test_find_gates_nonlocal_cc2d():
     """find_gates_nonlocal on the 2D color code: the quotient map must be surjective and
     kill exactly the sums of translates of local transversal gates."""
-    from transversal_gate_finder.core import transpose_hom
-
     cc_2d = tg.TIGateFinder(2, 2)
     cc_2d.checks.add_columns([[((0,0),0), ((0,0),1), ((1,0),0), ((0,1),1), ((0,1),0), ((-1,1),1)]])
     cc_2d.other_checks = cc_2d.checks
@@ -294,7 +296,7 @@ def test_find_gates_nonlocal_cc2d():
 
     q = cc_2d.transphys_nonlocal
     # surjective: the dual is injective
-    assert sum(transpose_hom(q.h).kernel().dim1) == 0
+    assert sum(q.h.transpose().kernel().dim1) == 0
 
     # q kills the translate-sum of every local transversal gate
     local_pb = cc_2d.checks.phase_pullback(cc_2d.gates) @ cc_2d.local_gates
@@ -306,6 +308,23 @@ def test_find_gates_nonlocal_cc2d():
             gen[l][j] = 1
             x = cc_2d.transphys_allphys.h.solve_with_helper(P @ gen, cc_2d.transphys_solve_helper)
             assert (q.h @ x).is_zero()
+
+
+def test_z2_column_reduction_on_small_torus():
+    """When compactifying onto a torus smaller than a check/logical, coincident qubits must
+    cancel in Z2 (not merge). Phase-function (gate) supports instead collapse idempotently."""
+    # a Z2Hom column with a repeated row index cancels it
+    assert tg.Z2Hom(3, [[0, 1, 0]]).h == [[1]]
+
+    # a 1D check spanning coords 0 and 2, compactified onto a period-2 torus: both coincide -> empty
+    code = tg.TIGateFinder(1, 1)
+    code.checks.add_columns([[((0,), 0), ((2,), 0)]])
+    fin = code.as_finite_code([[2]], auto_logicals=False,
+                              manual_logicals=[[((0,), 0), ((2,), 0)]],
+                              manual_gates=[[], [{((0,), 0), ((2,), 0)}]])
+    assert fin.checks.h == [[], []]          # X checks cancel
+    assert fin.logicals.h == [[]]            # manual logical cancels
+    assert fin.gates.locs[1] == [frozenset({0})]  # gate support stays weight 1 (idempotent)
 
 
 def test_ti_z2hom_transpose_and_composition():
@@ -320,8 +339,6 @@ def test_ti_z2hom_transpose_and_composition():
 
 def test_quotient_image_by_image():
     """quotient_image_by_image(K, K @ R) must be the cokernel of R: it kills exactly im(R), is surjective, and has the complementary size."""
-    from transversal_gate_finder.core import quotient_image_by_image, transpose_hom
-
     rng = np.random.default_rng(5)
     for trial in range(10):
         dims_G = [int(rng.integers(0, 3)) for _ in range(3)]
@@ -333,13 +350,13 @@ def test_quotient_image_by_image():
         P = K @ R  # im(P) is contained in im(K) by construction
 
         # transpose is functorial (contravariant), i.e. really is the duality
-        assert np.array_equal(transpose_hom(P).M, (transpose_hom(R) @ transpose_hom(K)).M)
+        assert np.array_equal(P.transpose().M, (R.transpose() @ K.transpose()).M)
 
-        q = quotient_image_by_image(K, P)
+        q = K.quotient_image_by_image(P)
         # ker(q) contains im(R) (f = R is the unique solution of K f = P)
         assert (q @ R).is_zero()
         # q is surjective: its dual is injective
-        assert sum(transpose_hom(q).kernel().dim1) == 0
+        assert sum(q.transpose().kernel().dim1) == 0
         # log2 sizes: |T| = |im R| * |Q|, so ker(q) is not larger than im(R)
         log2size = lambda dims: sum((l + 1) * n for l, n in enumerate(dims))
         im_dims = R.epi_mono()[0].dim1

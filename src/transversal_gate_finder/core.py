@@ -47,14 +47,17 @@ class PhaseLocs:
     coefficient of the generator. In QEC terms, an entry of locs[l] is the set
     of qubits participating in one ansatz gate of order 2^(l+1).
 
+    The locs are always kept consolidated: every support is stored as a frozenset
+    and appears at exactly one level, the highest one it was added at (see add_loc).
+
     Attributes:
         dim: dimension of the underlying Z2 module (number of qubits)
-        locs: locs[l][i] is the support of the i-th generator of level l, a set of int
+        locs: locs[l][i] is the support of the i-th generator of level l, a frozenset of int
     """
 
     def __init__(self, dim: int, locs: Optional[Sequence[Sequence[Iterable[int]]]] = None):
         self.dim = dim
-        self.locs: list[list[set[int]]] = []
+        self.locs: list[list[frozenset[int]]] = []
         if locs is not None:
             for l, llocs in enumerate(locs):
                 self.add_locs(llocs, l)
@@ -69,15 +72,28 @@ class PhaseLocs:
         if len(self.locs) <= l:
             self.locs += [[] for _ in range(l - len(self.locs) + 1)]
 
-    def add_locs(self, locs: Iterable[Iterable[int]], l: int) -> None:
-        """Append generator supports at level l."""
+    def add_loc(self, qubits: Iterable[int], l: int) -> None:
+        """Add a single generator support at level l, keeping the locs consolidated.
+
+        Does nothing if the support already occurs at level l or higher; if it occurs
+        at a lower level it is moved up to l (a support is kept only at its highest level).
+        """
+        loc = frozenset(qubits)
+        for i in loc:
+            if not 0 <= i < self.dim:
+                raise ValueError(f"Support index {i} out of range 0..{self.dim - 1}")
         self.extend_levels(l)
+        if any(loc in self.locs[higher] for higher in range(l, len(self.locs))):
+            return
+        for lower in range(l):
+            if loc in self.locs[lower]:
+                self.locs[lower].remove(loc)
+        self.locs[l].append(loc)
+
+    def add_locs(self, locs: Iterable[Iterable[int]], l: int) -> None:
+        """Add generator supports at level l (see add_loc)."""
         for loc in locs:
-            loc = set(loc)
-            for i in loc:
-                if not 0 <= i < self.dim:
-                    raise ValueError(f"Support index {i} out of range 0..{self.dim - 1}")
-            self.locs[l].append(loc)
+            self.add_loc(loc, l)
 
     def add_all_single_locs(self, l: int) -> None:
         """Add all singleton supports {i} at level l (single-qubit ansatz gates of order 2^(l+1))."""
@@ -91,18 +107,8 @@ class PhaseLocs:
         """
         if isinstance(groups, Z2Hom):
             groups = groups.h
-        loc_set = set()
         for group in groups:
-            loc_set.update(set(map(frozenset, combinations(group, k))))
-        self.add_locs(map(set, loc_set), l)
-
-    def consolidate(self) -> None:
-        """Remove duplicate supports, keeping a support only at the highest level where it occurs."""
-        current = set()
-        for l in reversed(range(len(self.locs))):
-            llocs = set(map(frozenset, self.locs[l])) - current
-            current |= llocs
-            self.locs[l] = list(map(set, llocs))
+            self.add_locs(combinations(group, k), l)
 
 
 class Z2Hom:
@@ -128,10 +134,15 @@ class Z2Hom:
         if isinstance(columns, Z2Hom):
             columns = columns.h
         for col in columns:
-            col = sorted(set(col))
-            if col and not (0 <= col[0] and col[-1] < self.dim0):
-                raise ValueError(f"Column entry out of range 0..{self.dim0 - 1}: {col}")
-            self.h.append(col)
+            # Z2 reduction: a row index survives iff it appears an odd number of times.
+            # (Repeats occur e.g. when compactifying a translation-invariant check onto a
+            # small torus where two cells map onto the same physical qubit; they must cancel.)
+            parity: dict[int, int] = {}
+            for i in col:
+                if not 0 <= i < self.dim0:
+                    raise ValueError(f"Column entry out of range 0..{self.dim0 - 1}: {i}")
+                parity[i] = parity.get(i, 0) ^ 1
+            self.h.append(sorted(i for i, p in parity.items() if p))
 
     def to_array(self) -> np.ndarray:
         """Dense 0/1 coefficient matrix of shape (dim0, dim1). Each column has ones at its stored row indices."""
@@ -267,8 +278,8 @@ class TwoGroupHom:
         return self.h.is_zero()
 
     def transpose(self) -> "TwoGroupHom":
-        """Transpose (dual) homomorphism, see transpose_hom."""
-        return TwoGroupHom(transpose_hom(self.h), phase_locs0=self.phase_locs1, phase_locs1=self.phase_locs0)
+        """Transpose (dual) homomorphism, see lin.Hom.transpose."""
+        return TwoGroupHom(self.h.transpose(), phase_locs0=self.phase_locs1, phase_locs1=self.phase_locs0)
 
     def to_string(self) -> str:
         """Write the images of all source generators as a string, one line per generator.
@@ -342,6 +353,14 @@ class GateFinder:
             that is, with prefactor 1/2^(l+1) (for example T is l=2, CS or S are l=1);
             each gate is the set of participating qubits. Add gates via gates.add_locs,
             gates.add_all_single_locs, gates.add_locs_in_groups, etc.
+
+    find_gates() additionally sets (see its docstring for details):
+        transphys_allphys: all transversal physical gates -> all physical gates
+        translog_alllog: all transversal logical gates -> all logical gates
+        transphys_translog: transversal physical gates -> transversal logical gates
+        stabphys_allphys: all transversal stabilizers -> all physical gates
+        log_find_helper, rep_find_helper: solve helpers used by test_if_implemented
+            and find_phys_rep
     """
 
     def __init__(self, nr_qubits: int, checks=None, gates=None, logicals=None, other_checks=None):
@@ -384,7 +403,6 @@ class GateFinder:
 
     def find_logical_action(self) -> None:
         allphys_alllog = self.logicals.phase_pullback(self.gates) # map all physical -> all logical
-        self.alllog_locs = allphys_alllog.phase_locs0 # supports of the logical phase functions
         transphys_alllog = allphys_alllog @ self.transphys_allphys # map transversal physical -> all logical
         self.translog_alllog, self.transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
         _, self.log_find_helper = self.translog_alllog.kernel(return_solve_helper = True) # allows test_if_implemented to solve for a preimage in the transversal logicals
@@ -421,59 +439,60 @@ class GateFinder:
     def print_phys_rep(self, logic_gate) -> None:
         print(self.find_phys_rep(logic_gate).to_string())
 
-    def test_if_implemented(self, gates, coeffs) -> Optional[lin.Elem]:
+    def test_if_implemented(self, gates) -> Optional[lin.Elem]:
         """
         Can be called after find_gates().
         Test whether a given diagonal logical gate has a transversal implementation.
 
         Parameters:
-            gates: Gate locations in the same format as GateFinder.gates.locs, except that the qubit numbers refer to the logical qubits of the CSS code
-            coeffs: Int list with one coefficient per gate location, flattened over all orders (an Elem coefficient vector for "gates")
+            gates: Dict mapping (qubit set, gate level) to coefficient, where the qubit
+                set is a set of logical qubit numbers of the CSS code and the gate level l
+                corresponds to order 2^(l+1); the coefficient is the numerator of the phase
+                factor relative to the denominator 2^(l+1).
 
         Returns:
             None if the logical gate is not implemented by any transversal gate. Otherwise an Elem over the abstract 2-group of transversal logicals (the source of self.translog_alllog), which can be passed to find_phys_rep to obtain a physical implementation.
         """
         loc_levels = {frozenset(loc): (lev, i)
-                      for lev, llocs in enumerate(self.alllog_locs.locs) for i, loc in enumerate(llocs)}
+                      for lev, llocs in enumerate(self.translog_alllog.phase_locs0.locs) for i, loc in enumerate(llocs)}
 
         target = lin.Elem.zeros(self.translog_alllog.dim0)
-        pos = 0
-        for l, lgates in enumerate(gates):
-            for gate in lgates:
-                c = int(coeffs[pos]) % 2**(l+1)
-                pos += 1
-                if c == 0:
-                    continue
-                entry = loc_levels.get(frozenset(gate))
-                if entry is None:
+        for (gate, l), coeff in gates.items():
+            c = int(coeff) % 2**(l+1)
+            if c == 0:
+                continue
+            entry = loc_levels.get(frozenset(gate))
+            if entry is None:
+                return None
+            lev, i = entry
+            if lev >= l:
+                val = c * 2**(lev-l)
+            else:
+                # the location only supports logical gates of order 2^(lev+1)
+                if c % 2**(l-lev) != 0:
                     return None
-                lev, i = entry
-                if lev >= l:
-                    val = c * 2**(lev-l)
-                else:
-                    # the location only supports logical gates of order 2^(lev+1)
-                    if c % 2**(l-lev) != 0:
-                        return None
-                    val = c // 2**(l-lev)
-                target[lev][i] = (int(target[lev][i]) + val) % 2**(lev+1)
+                val = c // 2**(l-lev)
+            target[lev][i] = (int(target[lev][i]) + val) % 2**(lev+1)
 
         try:
             return self.translog_alllog.solve_with_helper(target, self.log_find_helper)
         except ValueError:
             return None
 
-    def find_phys_rep_free(self, gates, coeffs) -> Optional[TwoGroupElem]:
+    def find_phys_rep_free(self, gates) -> Optional[TwoGroupElem]:
         """
         Can be called after find_gates().
-        Find a physical representative for a logical gate given in free form (gate locations on the logical qubits plus coefficients, see test_if_implemented), or None if the gate has no transversal implementation.
+        Find a physical representative for a logical gate given in free form (a dict of
+        {(logical qubit set, gate level): coefficient}, see test_if_implemented), or None
+        if the gate has no transversal implementation.
         """
-        translog = self.test_if_implemented(gates, coeffs)
+        translog = self.test_if_implemented(gates)
         if translog is None:
             return None
         return self.find_phys_rep(translog.v)
 
-    def print_phys_rep_free(self, gates, coeffs) -> None:
-        rep = self.find_phys_rep_free(gates, coeffs)
+    def print_phys_rep_free(self, gates) -> None:
+        rep = self.find_phys_rep_free(gates)
         if rep is None:
             print("no transversal implementation")
         else:
