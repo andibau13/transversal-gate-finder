@@ -279,11 +279,15 @@ def test_steane_end_to_end():
     results = steane.find_gates()
     assert results.translog_alllog.dim1 == [0, 1]
     # logical S is transversally implemented, logical T is not
-    rep = results.find_phys_rep_free({(frozenset({0}), 1): 1})
+    rep = results.find_phys_rep_free([({0}, 1, 1)])
     assert rep is not None
-    assert results.test_if_implemented({(frozenset({0}), 2): 1}) is None
+    assert results.test_if_implemented([({0}, 2, 1)]) is None
     # physical S-type stabilizers: one order-2 generator per X check
     assert results.stabphys_allphys.dim1 == [3, 0]
+    # the reporting helpers run without error and see the single order-4 non-trivial gate
+    assert results.transphys_translog.dim0 == [0, 1]
+    results.print_nontrivial_dimension()
+    results.print_nontrivial_generator_reps()
 
 
 def test_find_gates_nonlocal_cc2d():
