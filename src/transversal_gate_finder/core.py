@@ -352,11 +352,11 @@ class GateFinderResults:
     Attributes (each None when not produced):
         transphys_allphys: TwoGroupHom, transversal physical gates -> all physical gates
         transphys_translog: surjective TwoGroupHom, transversal (physical) gates -> non-trivial
-            transversal gates (the 2-group over which find_phys_rep takes its argument)
+            transversal gates (the 2-group over which find_nontrivial_physical takes its argument)
         translog_alllog: TwoGroupHom, transversal logical gates -> all logical gates
         stabphys_allphys: TwoGroupHom, transversal stabilizers -> all physical gates
-        log_find_helper: solve helper used by test_if_implemented
-        rep_find_helper: solve helper used by find_phys_rep
+        log_find_helper: solve helper used by find_nontrivial_from_logical
+        rep_find_helper: solve helper used by find_nontrivial_physical
         transphys_solve_helper: kernel solve helper for transphys_allphys (translation-invariant
             codes only; used internally by find_gates_nonlocal)
 
@@ -367,7 +367,7 @@ class GateFinderResults:
 
     Method availability:
         - GateFinder.find_gates / TIGateFinder.find_gates_compactify: all methods apply.
-        - TIGateFinder.find_gates_nonlocal: only find_phys_rep / print_phys_rep (it sets
+        - TIGateFinder.find_gates_nonlocal: only find_nontrivial_physical / print_nontrivial_physical (it sets
           transphys_allphys, transphys_translog, rep_find_helper).
         - TIGateFinder.find_gates: only transphys_allphys is set (a prerequisite result feeding
           find_gates_nonlocal / find_gates_compactify); no query method applies.
@@ -399,7 +399,7 @@ class GateFinderResults:
         For every generator of the non-trivial 2-group (self.transphys_translog.dim0) a physical
         ansatz-gate configuration realizing it is printed, one generator per line, grouped by order.
 
-        The representatives are found individually (find_phys_rep), not assembled into a single
+        The representatives are found individually (find_nontrivial_physical), not assembled into a single
         homomorphism: a non-trivial gate of order 2^(l+1) may only be implementable by a physical
         gate of strictly higher order (e.g. an order-2 logical realized by order-4 S gates), in
         which case no homomorphic section of transphys_translog exists.
@@ -451,7 +451,7 @@ class GateFinderResults:
                 denominator 2^(l+1). For example [({0}, 1, 1)] is a logical S on qubit 0.
 
         Returns:
-            None if the logical gate is not implemented by any transversal gate. Otherwise an Elem over the abstract 2-group of transversal logicals (the source of self.translog_alllog), which can be passed to find_phys_rep to obtain a physical implementation.
+            None if the logical gate is not implemented by any transversal gate. Otherwise an Elem over the abstract 2-group of transversal logicals (the source of self.translog_alllog), which can be passed to find_nontrivial_physical to obtain a physical implementation.
         """
         loc_levels = {frozenset(loc): (lev, i)
                       for lev, llocs in enumerate(self.translog_alllog.phase_locs0.locs) for i, loc in enumerate(llocs)}
@@ -482,7 +482,7 @@ class GateFinderResults:
     def find_physical_from_logical(self, gates) -> Optional["TwoGroupElem"]:
         """
         Find a physical representative for a logical gate given in free form (a list of
-        (logical qubit set, gate level, coefficient) triples, see test_if_implemented), or None
+        (logical qubit set, gate level, coefficient) triples, see find_nontrivial_from_logical), or None
         if the gate has no transversal implementation.
         """
         translog = self.find_nontrivial_from_logical(gates)
@@ -514,7 +514,7 @@ class GateFinder:
             gates.add_all_single_locs, gates.add_locs_in_groups, etc.
 
     find_gates() returns a GateFinderResults holding the computed maps and the query methods
-    (find_phys_rep, test_if_implemented, ...); see its docstring and GateFinderResults.
+    (find_nontrivial_physical, find_nontrivial_from_logical, ...); see its docstring and GateFinderResults.
     """
 
     def __init__(self, nr_qubits: int, checks=None, gates=None, logicals=None, other_checks=None):
@@ -539,7 +539,7 @@ class GateFinder:
         Returns a GateFinderResults with the following maps set (see GateFinderResults):
             transphys_allphys: All transversal physical gates: 2-group homomorphism from the group of all code-space preserving physical gates to the group of all physical gates formed by the ansatz gates
             translog_alllog: All transversal logical gates: 2-group homomorphism from the group of logicals with a transversal implementation to the group of all logicals
-            rep_find_helper: allows the method find_phys_rep to quickly find a physical representative for a given transversal logical
+            rep_find_helper: allows the method find_nontrivial_physical to quickly find a physical representative for a given transversal logical
             stabphys_allphys: All transversal stabilizers: 2-group homomorphism from the group of all physical gates preserving the code space to the group of all physical gates
 
         Naming convention for the different TwoGroupHoms: A Hom "x_y" is a hom from teh 2-group x to the 2-group y. the following 2-groups for x and y are possible:
@@ -560,7 +560,7 @@ class GateFinder:
         allphys_alllog = self.logicals.phase_pullback(self.gates) # map all physical -> all logical
         transphys_alllog = allphys_alllog @ transphys_allphys # map transversal physical -> all logical
         translog_alllog, transphys_translog = transphys_alllog.epi_mono() # map transversal logical -> all logical
-        _, log_find_helper = translog_alllog.kernel(return_solve_helper = True) # allows test_if_implemented to solve for a preimage in the transversal logicals
+        _, log_find_helper = translog_alllog.kernel(return_solve_helper = True) # allows find_nontrivial_from_logical to solve for a preimage in the transversal logicals
         stabphys_transphys, rep_find_helper = transphys_translog.kernel(return_solve_helper = True) # stabilizer physical -> transversal physical
         stabphys_allphys = transphys_allphys @ stabphys_transphys # stabilizer physical -> all physical
         return GateFinderResults(

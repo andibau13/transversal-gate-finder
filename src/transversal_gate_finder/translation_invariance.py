@@ -154,7 +154,7 @@ class TIPhaseLocs:
         to the finite one (phase_locs1 = self, phase_locs0 = the finite locs). It sends each TI
         generator to the sum over all unit cells of the finite generator that its translate lands
         on. Composing it with a TwoGroupHom whose target is this TI phase group transports that hom
-        to the finite code; e.g. TIGateFinder.as_finite_code obtains the finite transphys_allphys
+        to the finite code; e.g. TIGateFinder.compactify obtains the finite transphys_allphys
         by composing it with the TI transphys_allphys.
         """
         total_dim = compactification_data[2]
@@ -582,7 +582,7 @@ class TIGateFinder:
     find_gates_nonlocal() and find_gates_compactify() each return a GateFinderResults
     (see that class). Its transphys_allphys is always the TI map from the
     abstract group T of translation-invariant transversal gates to the group G of all TI
-    physical ansatz gate configurations (phase_locs0 = self.gates), so find_phys_rep returns
+    physical ansatz gate configurations (phase_locs0 = self.gates), so find_nontrivial_physical returns
     representatives as translation-invariant ansatz-gate coefficients (one per unit cell).
     """
     def __init__(self, nr_qubits: int, dimension: int, checks=None, gates=None, other_checks=None):
@@ -691,7 +691,7 @@ class TIGateFinder:
         T to the quotient 2-group N. Elements of N are classes of TI transversal gates that
         differ by sums of translates of local transversal gates; nontrivial classes cannot be
         generated locally. Also sets rep_find_helper (kernel solve helper for T -> N), so
-        find_phys_rep can return physical representatives, and keeps transphys_allphys (the TI
+        find_nontrivial_physical can return physical representatives, and keeps transphys_allphys (the TI
         map T -> G).
         """
         transphys_allphys, transphys_solve_helper = self._find_transversal()
@@ -718,14 +718,14 @@ class TIGateFinder:
         Here "non-trivial" means acting non-trivially as a logical gate on the compactified
         finite code (contrast find_gates_nonlocal, where non-trivial means "not a translation-
         invariant sum of local terms"). Computes the translation-invariant transversal gates
-        (_find_transversal), builds the compactified finite code (as_finite_code) and transports
+        (_find_transversal), builds the compactified finite code (compactify) and transports
         the transversal gates onto it via the induced compactification homomorphism, then runs the
         finite code's logical-action analysis.
 
         Returns a GateFinderResults whose transphys_allphys stays the translation-invariant map
         T -> G, with the logical-action maps (translog_alllog, transphys_translog,
         log_find_helper, rep_find_helper) taken from the compactified finite code and stabphys_allphys
-        rebuilt against the TI map. Because transphys_allphys stays the TI map, find_phys_rep returns
+        rebuilt against the TI map. Because transphys_allphys stays the TI map, find_nontrivial_physical returns
         representatives as coefficients on the *translation-invariant* ansatz gates (one per unit
         cell), not on the finite gates.
         """
@@ -736,7 +736,7 @@ class TIGateFinder:
         # the TI transversal gates onto the finite code and analyse their logical action there.
         tgf.gates, gates_compactify = self.gates.compactify(compactification_data)
         finite_results = tgf.find_logical_action(gates_compactify @ transphys_allphys)
-        # keep transphys_allphys as the TI map T -> G so find_phys_rep expresses representatives as
+        # keep transphys_allphys as the TI map T -> G so find_nontrivial_physical expresses representatives as
         # translation-invariant ansatz-gate coefficients; rebuild stabphys_allphys against that map
         stabphys_transphys = finite_results.transphys_translog.kernel()  # trivial-logical-action transversal gates
         return GateFinderResults(
@@ -754,11 +754,11 @@ class TIGateFinder:
         res = TIGateFinder(self.nr_qubits + other.nr_qubits, self.dimension)
         for attr in ("checks", "other_checks"):
             getattr(res, attr).add_columns(getattr(self, attr).h)
-            getattr(res, attr).add_columns(shift_ti_loc_list(getattr(other, attr).h, self.nr_qubits))
+            getattr(res, attr).add_columns(_shift_ti_loc_list(getattr(other, attr).h, self.nr_qubits))
         for l, llocs in enumerate(self.gates.locs):
             res.gates.add_locs(llocs, l)
         for l, llocs in enumerate(other.gates.locs):
-            res.gates.add_locs(shift_ti_loc_list(llocs, self.nr_qubits), l)
+            res.gates.add_locs(_shift_ti_loc_list(llocs, self.nr_qubits), l)
         return res
 
     def inverted_coordinates(self) -> "TIGateFinder":
@@ -774,13 +774,13 @@ class TIGateFinder:
                             gates = [invert_coords(lgates) for lgates in self.gates.locs])
 
 
-def shift_ti_loc_list(loc_list, shift: int) -> list[set[TISpecifier]]:
+def _shift_ti_loc_list(loc_list, shift: int) -> list[set[TISpecifier]]:
     """Shift the internal qubit number (needed for addition of codes)."""
     return [{(coord, intern+shift) for coord, intern in loc} for loc in loc_list]
 
 
 def twobga_code(dimension: int, poly1, poly2) -> TIGateFinder:
-    """Creates an "infinite" abelian 2-block group-algebra code from two polynomials. After compactification with as_finite_code() this is a true 2-block group-algebra code."""
+    """Creates an "infinite" abelian 2-block group-algebra code from two polynomials. After compactification with compactify() this is a true 2-block group-algebra code."""
     code = TIGateFinder(2, dimension)
     code.checks.add_columns([[(tuple(coord), 0) for coord in poly1] + [(tuple(coord), 1) for coord in poly2]])
     code.other_checks.add_columns([[(tuple(-c for c in coord), 1) for coord in poly1] + [(tuple(-c for c in coord), 0) for coord in poly2]])
