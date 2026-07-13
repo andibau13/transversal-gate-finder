@@ -141,18 +141,38 @@ class TIPhaseLocs:
         qubits = [(tuple(coord), intern) for coord in group for intern in range(self.dim)]
         self.add_locs(combinations(qubits, k), l)
 
-    def compactify(self, compactification_data) -> PhaseLocs:
-        """Compactify onto a finite lattice, returning a plain (finite) PhaseLocs.
+    def compactify(self, compactification_data) -> tuple[PhaseLocs, "TwoGroupHom"]:
+        """Compactify onto a finite lattice.
 
-        Every generator support is repeated once per unit cell and its (coord, internal)
-        specifiers are mapped to global qubit numbers (see extract_compactification_data).
-        Coincident specifiers collapse idempotently (handled by PhaseLocs.add_loc).
+        Returns the pair (finite PhaseLocs, induced homomorphism). Every generator support is
+        repeated once per unit cell and its (coord, internal) specifiers are mapped to global
+        qubit numbers (see extract_compactification_data); coincident specifiers collapse
+        idempotently (PhaseLocs.add_loc).
+
+        The induced homomorphism is a TwoGroupHom from this (translation-invariant) phase group
+        to the finite one (phase_locs1 = self, phase_locs0 = the finite locs). It sends each TI
+        generator to the sum over all unit cells of the finite generator that its translate lands
+        on. Composing it with a TwoGroupHom whose target is this TI phase group transports that hom
+        to the finite code; e.g. TIGateFinder.as_finite_code obtains the finite transphys_allphys
+        by composing it with the TI transphys_allphys.
         """
         total_dim = compactification_data[2]
         result = PhaseLocs(total_dim * self.dim)
         for l, llocs in enumerate(self.locs):
             result.add_locs(generate_ti_list(compactification_data, llocs), l)
-        return result
+
+        loc_index = {loc: (flev, i) for flev, llocs in enumerate(result.locs) for i, loc in enumerate(llocs)}
+        h = lin.Hom.zeros(result.dims, self.dims)
+        for l in range(len(self.locs)):
+            for i in range(total_dim):
+                shift = nr_to_coord(i, compactification_data)
+                for g in range(len(self.locs[l])):
+                    loc = frozenset(compactify_ti_specifier(compactification_data, (coord + shift, intern))
+                                    for coord, intern in self.locs[l][g])
+                    flev, idx = loc_index[loc]
+                    h[flev, l][idx, g] += 1
+        h.reduce_mod()
+        return result, TwoGroupHom(h, phase_locs0=result, phase_locs1=self)
 
 
 class TIZ2Hom:
@@ -625,11 +645,22 @@ class TIGateFinder:
 
         tgf = GateFinder(total_dim * self.nr_qubits)
         tgf.checks = self.checks.compactify(compactification_data)
-        tgf.gates = self.gates.compactify(compactification_data)
-        # manual gates: (coord, internal) specifiers mapped to global qubits, not repeated per unit cell
+        tgf.gates, gates_compactify = self.gates.compactify(compactification_data)
+        # unfold the TI transversal gates (if already computed) by transporting them along the
+        # induced compactification homomorphism; this correctly sums each transversal gate over all
+        # translates, including gate translates that collide onto the same finite qubit set.
+        if self.transphys_allphys is not None:
+            tgf.transphys_allphys = gates_compactify @ self.transphys_allphys
+        # manual gates: extra finite ansatz gates, not repeated per unit cell. They carry no
+        # transversal gate, so the unfolded transphys_allphys is padded with zero coefficients for them.
         if manual_gates is not None:
             for l, lgates in enumerate(manual_gates):
                 tgf.gates.add_locs([[compactify_ti_specifier(compactification_data, spec) for spec in loc] for loc in lgates], l)
+            if self.transphys_allphys is not None:
+                padded = lin.Hom.zeros(tgf.gates.dims, tgf.transphys_allphys.dim1)
+                for l in range(len(tgf.transphys_allphys.h.dim0)):
+                    padded[l, :][:tgf.transphys_allphys.h.dim0[l], :] = tgf.transphys_allphys.h[l, :]
+                tgf.transphys_allphys = TwoGroupHom(padded, phase_locs0=tgf.gates)
         tgf.other_checks = self.other_checks.compactify(compactification_data)
 
         # logicals derived from the Z checks (if requested); must come first since it overwrites tgf.logicals
@@ -641,26 +672,6 @@ class TIGateFinder:
         # manual logicals: finite-code specifiers, not repeated per unit cell
         if manual_logicals is not None:
             tgf.logicals.add_columns([[compactify_ti_specifier(compactification_data, spec) for spec in loc] for loc in manual_logicals])
-
-        if self.transphys_allphys is not None:
-            # unfold the translation-invariant transversal gates: apply the TI gate at every unit cell.
-            # Each TI target generator (l, g) applied at cell i lands on a finite gate loc; that loc may
-            # have been consolidated to a higher level fl of tgf.gates (or merged with other translates),
-            # so we look up its level/index and add 2^(fl-l) * K[l, :][g, :] there (2^(fl-l) rescales the
-            # phase 1/2^(l+1) to the generator 1/2^(fl+1)), accumulating merged contributions.
-            K = self.transphys_allphys.h
-            loc_index = {loc: (flev, i) for flev, llocs in enumerate(tgf.gates.locs) for i, loc in enumerate(llocs)}
-            unfolded = lin.Hom.zeros(tgf.gates.dims, K.dim1)
-            for l in range(len(K.dim0)):
-                for i in range(total_dim):
-                    shift = nr_to_coord(i, compactification_data)
-                    for g in range(K.dim0[l]):
-                        loc = frozenset(compactify_ti_specifier(compactification_data, (coord + shift, intern))
-                                        for coord, intern in self.gates.locs[l][g])
-                        flev, idx = loc_index[loc]
-                        unfolded[flev, :][idx, :] += 2 ** (flev - l) * K[l, :][g, :]
-            unfolded.reduce_mod()
-            tgf.transphys_allphys = TwoGroupHom(unfolded, phase_locs0=tgf.gates)
 
         return tgf
 
