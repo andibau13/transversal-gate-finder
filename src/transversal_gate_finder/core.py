@@ -354,7 +354,8 @@ class GateFinderResults:
         transphys_translog: surjective TwoGroupHom, transversal (physical) gates -> non-trivial
             transversal gates (the 2-group over which find_nontrivial_physical takes its argument)
         translog_alllog: TwoGroupHom, transversal logical gates -> all logical gates
-        stabphys_allphys: TwoGroupHom, transversal stabilizers -> all physical gates
+        stabphys_allphys: TwoGroupHom, transversal stabilizers -> all physical gates (for
+            find_gates_nonlocal: local transversal gates summed over translates -> all physical)
         log_find_helper: solve helper used by find_nontrivial_from_logical
         rep_find_helper: solve helper used by find_nontrivial_physical
         transphys_solve_helper: kernel solve helper for transphys_allphys (translation-invariant
@@ -367,8 +368,9 @@ class GateFinderResults:
 
     Method availability:
         - GateFinder.find_gates / TIGateFinder.find_gates_compactify: all methods apply.
-        - TIGateFinder.find_gates_nonlocal: only find_nontrivial_physical / print_nontrivial_physical (it sets
-          transphys_allphys, transphys_translog, rep_find_helper).
+        - TIGateFinder.find_gates_nonlocal: find_nontrivial_physical / print_nontrivial_physical (it sets
+          transphys_allphys, transphys_translog, rep_find_helper) and print_trivial_physicals (it also
+          sets stabphys_allphys, the sums of translates of local transversal gates).
         - TIGateFinder.find_gates: only transphys_allphys is set (a prerequisite result feeding
           find_gates_nonlocal / find_gates_compactify); no query method applies.
     """
@@ -415,7 +417,10 @@ class GateFinderResults:
                 print(self.find_nontrivial_physical(gen.v).to_string())
 
     def print_trivial_physicals(self) -> None:
-        """Print the physical transversal stabilizers (needs stabphys_allphys; not set by find_gates_nonlocal)."""
+        """Print the physical transversal stabilizers (needs stabphys_allphys).
+
+        For find_gates_nonlocal these are the sums of translates of local transversal gates.
+        """
         print(self.stabphys_allphys.to_string())
 
     def find_nontrivial_physical(self, nontrivial_gate) -> "TwoGroupElem":

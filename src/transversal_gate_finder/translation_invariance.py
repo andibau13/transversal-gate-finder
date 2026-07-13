@@ -721,7 +721,9 @@ class TIGateFinder:
         differ by sums of translates of local transversal gates; nontrivial classes cannot be
         generated locally. Also sets rep_find_helper (kernel solve helper for T -> N), so
         find_nontrivial_physical can return physical representatives, and keeps transphys_allphys (the TI
-        map T -> G).
+        map T -> G). Also sets stabphys_allphys: the hom from the abstract 2-group of local
+        transversal gates into the all-physical group whose image is the sums of translates of
+        local transversal gates (the "trivial" TI transversal gates, quotiented out to form N).
         """
         if local_mode == "support":
             local_gates = TIPhaseLocs.identity_on_support(local_gates, self.gates)
@@ -734,13 +736,18 @@ class TIGateFinder:
         local_transversal = local_pullback.kernel()
         # sum over all translates: each active local gate (shift, gate_nr) contributes to the TI gate gate_nr
         translate_sum = local_gates.ti_sum()
+        # sums of translates of local transversal gates: the "trivial" TI transversal gates (those
+        # generatable locally), as a hom from the abstract 2-group of local transversal gates into
+        # the all-physical group; its image is exactly what is quotiented out of T below
+        stabphys_allphys = translate_sum @ local_transversal
         quotient = transphys_allphys.h.quotient_image_by_image(
-            (translate_sum @ local_transversal).h, transphys_solve_helper)
+            stabphys_allphys.h, transphys_solve_helper)
         transphys_translog = TwoGroupHom(quotient)
         _, rep_find_helper = transphys_translog.kernel(return_solve_helper = True)
         return GateFinderResults(
             transphys_allphys=transphys_allphys,
             transphys_translog=transphys_translog,
+            stabphys_allphys=stabphys_allphys,
             rep_find_helper=rep_find_helper,
             transphys_solve_helper=transphys_solve_helper,
         )
