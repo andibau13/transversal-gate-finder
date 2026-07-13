@@ -288,7 +288,9 @@ class TwoGroupHom:
         """
         out = ""
         for lj in range(len(self.h.dim1)):
-            out += f"order {2 ** (lj + 1)}\n"
+            if self.h.dim1[lj] == 0:
+                continue
+            out += f"order {2 ** (lj + 1)}:\n"
             for j in range(self.h.dim1[lj]):
                 terms = []
                 for li in range(len(self.h.dim0)):
@@ -417,15 +419,22 @@ class GateFinderResults:
         """Print one physical representative for each generating non-trivial transversal gate.
 
         For every generator of the non-trivial 2-group (self.transphys_translog.dim0) a physical
-        ansatz-gate configuration realizing it is printed, one generator per line (grouped by
-        order). The representatives are assembled into a single homomorphism by solving for a
-        section of transphys_translog (lin.Hom.solve_hom) and composing with transphys_allphys.
+        ansatz-gate configuration realizing it is printed, one generator per line, grouped by order.
+
+        The representatives are found individually (find_phys_rep), not assembled into a single
+        homomorphism: a non-trivial gate of order 2^(l+1) may only be implementable by a physical
+        gate of strictly higher order (e.g. an order-2 logical realized by order-4 S gates), in
+        which case no homomorphic section of transphys_translog exists.
         """
-        section = lin.Hom.solve_hom(self.transphys_translog.h,
-                                    lin.Hom.identity(self.transphys_translog.dim0),
-                                    self.rep_find_helper)
-        reps = self.transphys_allphys @ TwoGroupHom(section)
-        print(reps.to_string())
+        dims = self.transphys_translog.dim0
+        for l, d in enumerate(dims):
+            if d == 0:
+                continue
+            print(f"order {2 ** (l + 1)}:")
+            for i in range(d):
+                gen = lin.Elem.zeros(dims)
+                gen[l][i] = 1
+                print(self.find_phys_rep(gen.v).to_string())
 
     def test_if_implemented(self, gates) -> Optional[lin.Elem]:
         """
