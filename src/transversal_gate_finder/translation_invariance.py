@@ -142,6 +142,31 @@ class TIPhaseLocs:
         qubits = [(tuple(coord), intern) for coord in group for intern in range(self.dim)]
         self.add_locs(combinations(qubits, k), l)
 
+    @staticmethod
+    def identity_on_support(ti_support: Sequence[Sequence[TISpecifier]],
+                            phase_locs0: "TIPhaseLocs") -> "TITwoGroupHom":
+        """Build the canonical identity inclusion onto a set of active generator locations.
+
+        Parameters:
+            ti_support: ti_support[l] is a list of pairs of a shift coordinate (int tuple)
+                and an internal generator number indexing phase_locs0.locs[l]. Each entry is
+                one independent degree of freedom: the generator phase_locs0.locs[l][i],
+                translated by the given shift only.
+            phase_locs0: TIPhaseLocs holding the internal generators referenced by ti_support.
+
+        Returns a TITwoGroupHom from the free 2-group over the active locations to the group
+        of translates of the phase_locs0 generators (identity coefficient matrix).
+        """
+        support: list[list[TISpecifier]] = []
+        for l in range(len(phase_locs0.locs)):
+            lactive = ti_support[l] if l < len(ti_support) else []
+            for shift, gate_nr in lactive:
+                if not 0 <= gate_nr < len(phase_locs0.locs[l]):
+                    raise ValueError(f"Generator number {gate_nr} out of range at level {l}")
+            support.append([(tuple(shift), gate_nr) for shift, gate_nr in lactive])
+        h = lin.Hom.identity([len(s) for s in support])
+        return TITwoGroupHom(h, support, phase_locs0=phase_locs0)
+
     def compactify(self, compactification_data) -> tuple[PhaseLocs, "TwoGroupHom"]:
         """Compactify onto a finite lattice.
 
@@ -345,6 +370,26 @@ class TITwoGroupHom:
         self.ti_support = [list(s) for s in ti_support]
         self.phase_locs0 = phase_locs0
         self.phase_locs1 = phase_locs1
+
+    @staticmethod
+    def identity_on_hypercube(hypercube: Sequence[int], phase_locs0: TIPhaseLocs) -> "TITwoGroupHom":
+        """Identity inclusion of every phase_locs0 generator translated across a hypercube box.
+
+        Parameters:
+            hypercube: box side lengths; the active shifts are all coordinates in
+                the product of range(hypercube[d]) (length must equal phase_locs0.dimension).
+            phase_locs0: TIPhaseLocs holding the internal generators.
+
+        Builds the ti_support that, at every level and for every internal generator of
+        phase_locs0, activates that generator at each shift inside the hypercube, then
+        returns TIPhaseLocs.identity_on_support(ti_support, phase_locs0).
+        """
+        if len(hypercube) != phase_locs0.dimension:
+            raise ValueError("hypercube must have one side length per spatial dimension")
+        shifts = list(product(*(range(d) for d in hypercube)))
+        ti_support = [[(shift, g) for g in range(len(llocs)) for shift in shifts]
+                      for llocs in phase_locs0.locs]
+        return TIPhaseLocs.identity_on_support(ti_support, phase_locs0)
 
     @property
     def dim0(self) -> list[int]:
@@ -604,7 +649,7 @@ class TIGateFinder:
             for gate in lgates:
                 print(set(gate))
 
-    def set_local_gates(self, active_gates: Sequence[Sequence[tuple[Coord, int]]]) -> None:
+    def set_local_gates(self, active_gates: Sequence[Sequence[TISpecifier]]) -> None:
         """Set self.local_gates from a list of active gate locations.
 
         Parameters:
@@ -615,17 +660,9 @@ class TIGateFinder:
 
         Sets self.local_gates to the corresponding canonical inclusion: a TITwoGroupHom
         from the free 2-group over the active locations to the group of translates of
-        the ansatz gates.
+        the ansatz gates (see TIPhaseLocs.identity_on_support).
         """
-        support: list[list[TISpecifier]] = []
-        for l in range(len(self.gates.locs)):
-            lactive = active_gates[l] if l < len(active_gates) else []
-            for shift, gate_nr in lactive:
-                if not 0 <= gate_nr < len(self.gates.locs[l]):
-                    raise ValueError(f"Gate number {gate_nr} out of range at level {l}")
-            support.append([(tuple(shift), gate_nr) for shift, gate_nr in lactive])
-        h = lin.Hom.identity([len(s) for s in support])
-        self.local_gates = TITwoGroupHom(h, support, phase_locs0=self.gates)
+        self.local_gates = TIPhaseLocs.identity_on_support(active_gates, self.gates)
 
     def compactify(self, lattice, auto_logicals: bool = True, ti_logicals=None,
                        manual_logicals=None, manual_gates=None) -> GateFinder:
