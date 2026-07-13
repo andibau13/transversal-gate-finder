@@ -1,6 +1,0 @@
-- briefly list attributes to GateFinder docstring that are set by find_gates()
-- remove self.alllog_locs attribute (replace with its definition)
-- change the input of test_if_implemented to make it more user friendly: instead of a GateLocs-type object "gates" and separate coeffs, use a dict of the form {(qubit-nr-set, gate-level): coefficient}. same input change for find_phys_rep_free and print_phys_rep_free.
-- always keep locs of PhaseLocs consolidated: Route any locs-adding function through a "add_loc" method taking as arguments a "qubit set" and level l. In this function, apply extend_levels if needed, remove the qubit set from a lower level if it already occurs there, and don't add anything if the qubit set already exists at a higher level. for this it might be easier to always keep locs as frozensets, which is fine.
-- same for TIPhaseLocs: route everything trough an add_loc method, which levels if needed, normalizes the loc by shifting the coord of the "smallest" qubit specifier to 0, removes the same loc from smaller levels or don't add if already in higher level.
-- i've moved the transpose_hom and quotient_image_by_image functions to the twogroup_linalg package. they are now methods of Hom. change the code accordingly.
