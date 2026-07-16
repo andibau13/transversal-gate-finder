@@ -738,8 +738,10 @@ class TIGateFinder:
         translate_sum = local_gates.ti_sum()
         # sums of translates of local transversal gates: the "trivial" TI transversal gates (those
         # generatable locally), as a hom from the abstract 2-group of local transversal gates into
-        # the all-physical group; its image is exactly what is quotiented out of T below
-        stabphys_allphys = translate_sum @ local_transversal
+        # the all-physical group; its image is exactly what is quotiented out of T below.
+        # Some combinations of local transversal gates vanish under the translate sum, so factor
+        # through the image to make stabphys_allphys injective (source = the actual sums of translates).
+        stabphys_allphys, _ = (translate_sum @ local_transversal).epi_mono()
         quotient = transphys_allphys.h.quotient_image_by_image(
             stabphys_allphys.h, transphys_solve_helper)
         transphys_translog = TwoGroupHom(quotient)
