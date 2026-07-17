@@ -45,13 +45,13 @@ Methods for the translation-invariant case are analogous
 
 ## Installation
 
-**Option 1 — pip install**
+**Option 1**: pip install
 
 ```bash
 pip install git+https://github.com/andibau13/transversal-gate-finder.git
 ```
 
-**Option 2 — clone and install in editable mode** (recommended if you want to browse the source or run the tests/examples):
+**Option 2**: clone, install into a venv in editable mode, to play with the examples notebook or look into source
 
 ```bash
 git clone https://github.com/andibau13/transversal-gate-finder.git
@@ -59,6 +59,15 @@ cd transversal-gate-finder
 python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
+
+To open the examples notebook:
+
+```bash
+python -m pip install ipykernel
+python -m ipykernel install --user --name my-venv --display-name "gate-finder-test-venv"
+jupyter notebook
+```
+In jupyter, open `examples/examples.ipynb` and select kernel `gate-finder-test-venv`.
 
 ## Quick start
 
@@ -94,15 +103,15 @@ tc_2d_x2 = tc_2d + tc_2d  # stack two copies
 tc_2d_x2.gates.add_all_single_locs(0)  # single-qubit Z ansatz gates
 tc_2d_x2.gates.add_locs([[((0,0),0), ((1,0),3)], [((0,0),1), ((0,1),2)]], 0)  # CZ ansatz gates
 
-# pathway 2: logical action on a 4x4 compactification
-res = tc_2d_x2.find_gates_compactify([[4,0],[0,4]])
-res.print_nontrivial_logicals()   # logical CZs between the two copies
+# pathway 2: logical action on a 4x4 twisted compactification
+res = tc_2d_x2.find_gates_compactify([[4,0],[1,4]])
+res.print_nontrivial_logicals()   # logical CZs between the two copies, as well as Pauli-Z logicals
 res.print_nontrivial_physicals()
 ```
 
 ## Examples
 
-The notebook [`examples/examples.ipynb`](examples/examples.ipynb) contains many worked examples, including:
+The notebook [`examples/examples.ipynb`](examples/examples.ipynb) contains many more examples, including:
 
 - S in the [[7,1,3]] Steane code and CZ in stacked 2D surface codes,
 - T in the [[15,1,3]] Reed-Muller code and √T in the [[31,1,3]] 4D simplicial color code,
